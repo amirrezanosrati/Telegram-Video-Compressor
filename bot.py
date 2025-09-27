@@ -3,7 +3,6 @@ import asyncio
 from telethon import TelegramClient, events
 from pathlib import Path
 import subprocess
-from tqdm import tqdm
 
 # ----------------- تنظیمات ----------------- #
 api_id = int(os.getenv("API_ID"))      # از my.telegram.org
@@ -20,7 +19,7 @@ client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_tok
 async def start(event):
     await event.respond("✅ ربات فعال شد!\n🎥 لطفا یک ویدیو ارسال کن.")
 
-# ----------------- فشرده‌سازی ----------------- #
+# ----------------- فشرده‌سازی ویدیو ----------------- #
 async def compress_video(input_path: Path, output_path: Path, event):
     cmd = [
         "ffmpeg", "-y", "-i", str(input_path),
@@ -34,8 +33,8 @@ async def compress_video(input_path: Path, output_path: Path, event):
         stderr=asyncio.subprocess.PIPE
     )
 
-    # نوار پیشرفت ساده
     msg = await event.respond("⏳ شروع فشرده‌سازی...")
+
     while True:
         line = await process.stderr.readline()
         if not line:
