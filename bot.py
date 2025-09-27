@@ -1,12 +1,9 @@
 import os
-import subprocess
 import logging
-import threading
-import http.server
-import socketserver
+import asyncio
+import nest_asyncio
+import subprocess
 from pathlib import Path
-from tqdm import tqdm
-from pyngrok import ngrok
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,88 +12,81 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-import asyncio
-import nest_asyncio
 
-# ──────────────────────────────── تنظیمات ──────────────────────────────── #
+# ──────────────── تنظیمات ──────────────── #
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-NGROK_AUTH = os.getenv("NGROK_TOKEN")
-
 OUTPUT_DIR = Path("/tmp/videos")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-PORT = 8080
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────── ngrok ──────────────────────────────── #
-ngrok.set_auth_token(NGROK_AUTH)
-public_url = ngrok.connect(PORT, "http").public_url
-logger.info(f"Ngrok URL: {public_url}")
-
-# ──────────────────────────────── HTTP Server ──────────────────────────────── #
-def start_http_server():
-    Handler = http.server.SimpleHTTPRequestHandler
-    os.chdir(OUTPUT_DIR)
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        logger.info(f"Serving at port {PORT}")
-        httpd.serve_forever()
-
-threading.Thread(target=start_http_server, daemon=True).start()
-
-# ──────────────────────────────── Bot Command: /start ──────────────────────────────── #
+# ──────────────── شروع ربات ──────────────── #
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("دستور /start دریافت شد")
-    await update.message.reply_text("👋 سلام! ویدیو بفرست تا فشرده کنم و لینک دانلود بدم.")
+    await update.message.reply_text("✅ ربات فعال شد!\n\n🎥 یک ویدیو بفرست تا فشرده کنم.")
 
-# ──────────────────────────────── فشرده‌سازی با tqdm ──────────────────────────────── #
-def compress_with_progress(input_path: Path, output_path: Path):
+# ──────────────── فشرده‌سازی ──────────────── #
+async def compress_video(input_path: Path, output_path: Path, update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmd = [
         "ffmpeg", "-y", "-i", str(input_path),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
         "-c:a", "aac", "-b:a", "128k", str(output_path)
     ]
-    process = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True)
-    pbar = tqdm(total=100, desc="🎬 در حال فشرده‌سازی", ncols=70)
 
-    for line in process.stderr:
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    progress_msg = await update.message.reply_text("⏳ شروع فشرده‌سازی...")
+
+    total_updates = 0
+    while True:
+        line = await process.stderr.readline()
+        if not line:
+            break
+        line = line.decode("utf-8", errors="ignore")
         if "time=" in line:
-            pbar.update(1 if pbar.n < 100 else 0)
-    process.wait()
-    pbar.close()
+            total_updates += 1
+            if total_updates % 5 == 0:  # هر چند خط یکبار آپدیت بده
+                await progress_msg.edit_text(f"🎬 در حال فشرده‌سازی...\nپیشرفت: {total_updates}%")
 
-# ──────────────────────────────── هندل ویدیو ──────────────────────────────── #
+    await process.wait()
+    await progress_msg.edit_text("✅ فشرده‌سازی تمام شد!")
+
+# ──────────────── هندل ویدیو ──────────────── #
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("📩 ویدیو یا فایل ویدیویی دریافت شد")
     video = update.message.video or update.message.document
     if not video:
-        await update.message.reply_text("⚠️ لطفاً یک ویدیو بفرست.")
+        await update.message.reply_text("⚠️ لطفاً یک ویدیو ارسال کنید.")
         return
 
-    await update.message.reply_text("⏳ دریافت فایل...")
+    # دریافت فایل
+    await update.message.reply_text("⬇️ در حال دانلود ویدیو...")
     file = await context.bot.get_file(video.file_id)
     in_file = OUTPUT_DIR / f"{video.file_id}.mp4"
     out_file = OUTPUT_DIR / f"{video.file_id}_compressed.mp4"
     await file.download_to_drive(str(in_file))
 
-    await update.message.reply_text("🎬 در حال فشرده‌سازی... لطفاً صبر کنید.")
-    compress_with_progress(in_file, out_file)
+    # فشرده‌سازی
+    await compress_video(in_file, out_file, update, context)
 
-    link = f"{public_url}/{out_file.name}"
-    logger.info(f"✅ فایل فشرده‌سازی شد: {link}")
-    await update.message.reply_text(f"✅ فشرده‌سازی تمام شد!\n📥 لینک دانلود:\n{link}")
+    # آپلود دوباره در تلگرام
+    await update.message.reply_text("⬆️ در حال آپلود ویدیو...")
+    await update.message.reply_video(video=open(out_file, "rb"))
+    await update.message.reply_text("🎉 آماده شد!")
 
-# ──────────────────────────────── main ──────────────────────────────── #
+# ──────────────── main ──────────────── #
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
 
-    logger.info("🤖 ربات فعال است و منتظر پیام‌ها...")
+    logger.info("🤖 ربات فعال شد و منتظر ویدیو است...")
     await app.run_polling()
 
-# ──────────────────────────────── اجرا ──────────────────────────────── #
+# ──────────────── اجرا ──────────────── #
 if __name__ == "__main__":
     nest_asyncio.apply()
     asyncio.get_event_loop().run_until_complete(main())
