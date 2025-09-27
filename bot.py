@@ -13,7 +13,7 @@ from telegram.ext import (
     filters,
 )
 
-# ──────────────── تنظیمات ──────────────── #
+# ────────────── تنظیمات ────────────── #
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OUTPUT_DIR = Path("/tmp/videos")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -21,18 +21,17 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ──────────────── شروع ربات ──────────────── #
+# ────────────── دستور /start ────────────── #
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ ربات فعال شد!\n\n🎥 یک ویدیو بفرست تا فشرده کنم.")
+    await update.message.reply_text("✅ ربات فعال شد!\n🎥 لطفا یک ویدیو ارسال کن.")
 
-# ──────────────── فشرده‌سازی ──────────────── #
+# ────────────── فشرده‌سازی ویدیو ────────────── #
 async def compress_video(input_path: Path, output_path: Path, update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmd = [
         "ffmpeg", "-y", "-i", str(input_path),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
         "-c:a", "aac", "-b:a", "128k", str(output_path)
     ]
-
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -49,44 +48,37 @@ async def compress_video(input_path: Path, output_path: Path, update: Update, co
         line = line.decode("utf-8", errors="ignore")
         if "time=" in line:
             total_updates += 1
-            if total_updates % 5 == 0:  # هر چند خط یکبار آپدیت بده
+            if total_updates % 5 == 0:
                 await progress_msg.edit_text(f"🎬 در حال فشرده‌سازی...\nپیشرفت: {total_updates}%")
 
     await process.wait()
     await progress_msg.edit_text("✅ فشرده‌سازی تمام شد!")
 
-# ──────────────── هندل ویدیو ──────────────── #
+# ────────────── هندل ویدیو ────────────── #
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video = update.message.video or update.message.document
     if not video:
         await update.message.reply_text("⚠️ لطفاً یک ویدیو ارسال کنید.")
         return
 
-    # دریافت فایل
     await update.message.reply_text("⬇️ در حال دانلود ویدیو...")
     file = await context.bot.get_file(video.file_id)
     in_file = OUTPUT_DIR / f"{video.file_id}.mp4"
     out_file = OUTPUT_DIR / f"{video.file_id}_compressed.mp4"
     await file.download_to_drive(str(in_file))
 
-    # فشرده‌سازی
     await compress_video(in_file, out_file, update, context)
 
-    # آپلود دوباره در تلگرام
     await update.message.reply_text("⬆️ در حال آپلود ویدیو...")
     await update.message.reply_video(video=open(out_file, "rb"))
     await update.message.reply_text("🎉 آماده شد!")
 
-# ──────────────── main ──────────────── #
-async def main():
+# ────────────── اجرای ربات ────────────── #
+if __name__ == "__main__":
+    nest_asyncio.apply()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
 
     logger.info("🤖 ربات فعال شد و منتظر ویدیو است...")
-    await app.run_polling()
-
-# ──────────────── اجرا ──────────────── #
-if __name__ == "__main__":
-    nest_asyncio.apply()
-    asyncio.get_event_loop().run_until_complete(main())
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
