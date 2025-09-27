@@ -1,84 +1,69 @@
 import os
-import logging
 import asyncio
-import nest_asyncio
-import subprocess
+from telethon import TelegramClient, events
 from pathlib import Path
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    MessageHandler,
-    filters,
-)
+import subprocess
+from tqdm import tqdm
 
-# ────────────── تنظیمات ────────────── #
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+# ----------------- تنظیمات ----------------- #
+api_id = int(os.getenv("API_ID"))      # از my.telegram.org
+api_hash = os.getenv("API_HASH")       # از my.telegram.org
+bot_token = os.getenv("BOT_TOKEN")     # توکن بات
+
 OUTPUT_DIR = Path("/tmp/videos")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_token)
 
-# ────────────── دستور /start ────────────── #
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ ربات فعال شد!\n🎥 لطفا یک ویدیو ارسال کن.")
+# ----------------- دستور /start ----------------- #
+@client.on(events.NewMessage(pattern="/start"))
+async def start(event):
+    await event.respond("✅ ربات فعال شد!\n🎥 لطفا یک ویدیو ارسال کن.")
 
-# ────────────── فشرده‌سازی ویدیو ────────────── #
-async def compress_video(input_path: Path, output_path: Path, update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------- فشرده‌سازی ----------------- #
+async def compress_video(input_path: Path, output_path: Path, event):
     cmd = [
         "ffmpeg", "-y", "-i", str(input_path),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
         "-c:a", "aac", "-b:a", "128k", str(output_path)
     ]
+
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
 
-    progress_msg = await update.message.reply_text("⏳ شروع فشرده‌سازی...")
-
-    total_updates = 0
+    # نوار پیشرفت ساده
+    msg = await event.respond("⏳ شروع فشرده‌سازی...")
     while True:
         line = await process.stderr.readline()
         if not line:
             break
-        line = line.decode("utf-8", errors="ignore")
+        line = line.decode()
         if "time=" in line:
-            total_updates += 1
-            if total_updates % 5 == 0:
-                await progress_msg.edit_text(f"🎬 در حال فشرده‌سازی...\nپیشرفت: {total_updates}%")
+            await msg.edit("🎬 در حال فشرده‌سازی...")
 
     await process.wait()
-    await progress_msg.edit_text("✅ فشرده‌سازی تمام شد!")
+    await msg.edit("✅ فشرده‌سازی تمام شد!")
 
-# ────────────── هندل ویدیو ────────────── #
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video = update.message.video or update.message.document
-    if not video:
-        await update.message.reply_text("⚠️ لطفاً یک ویدیو ارسال کنید.")
-        return
+# ----------------- هندل ویدیو ----------------- #
+@client.on(events.NewMessage())
+async def handle_video(event):
+    if event.video or (event.document and event.document.mime_type.startswith("video")):
+        await event.respond("⬇️ در حال دانلود ویدیو...")
+        video = event.video or event.document
+        in_file = OUTPUT_DIR / f"{video.id}.mp4"
+        out_file = OUTPUT_DIR / f"{video.id}_compressed.mp4"
 
-    await update.message.reply_text("⬇️ در حال دانلود ویدیو...")
-    file = await context.bot.get_file(video.file_id)
-    in_file = OUTPUT_DIR / f"{video.file_id}.mp4"
-    out_file = OUTPUT_DIR / f"{video.file_id}_compressed.mp4"
-    await file.download_to_drive(str(in_file))
+        await client.download_media(video, in_file)
 
-    await compress_video(in_file, out_file, update, context)
+        await compress_video(in_file, out_file, event)
 
-    await update.message.reply_text("⬆️ در حال آپلود ویدیو...")
-    await update.message.reply_video(video=open(out_file, "rb"))
-    await update.message.reply_text("🎉 آماده شد!")
+        await event.respond("⬆️ در حال آپلود ویدیو...")
+        await client.send_file(event.chat_id, out_file)
+        await event.respond("🎉 آماده شد!")
 
-# ────────────── اجرای ربات ────────────── #
-if __name__ == "__main__":
-    nest_asyncio.apply()
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
-
-    logger.info("🤖 ربات فعال شد و منتظر ویدیو است...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+# ----------------- اجرای ربات ----------------- #
+print("🤖 ربات فعال شد و منتظر ویدیو است...")
+client.run_until_disconnected()
