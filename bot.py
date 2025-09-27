@@ -19,19 +19,14 @@ import asyncio
 import nest_asyncio
 
 # ──────────────────────────────── تنظیمات ──────────────────────────────── #
-
-# گرفتن توکن‌ها
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 NGROK_AUTH = os.getenv("NGROK_TOKEN")
 
-# تنظیمات مسیر
 OUTPUT_DIR = Path("/tmp/videos")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# تنظیمات سرور
 PORT = 8080
 
-# ──────────────────────────────── لاگ ──────────────────────────────── #
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -52,6 +47,7 @@ threading.Thread(target=start_http_server, daemon=True).start()
 
 # ──────────────────────────────── Bot Command: /start ──────────────────────────────── #
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("دستور /start دریافت شد")
     await update.message.reply_text("👋 سلام! ویدیو بفرست تا فشرده کنم و لینک دانلود بدم.")
 
 # ──────────────────────────────── فشرده‌سازی با tqdm ──────────────────────────────── #
@@ -72,6 +68,7 @@ def compress_with_progress(input_path: Path, output_path: Path):
 
 # ──────────────────────────────── هندل ویدیو ──────────────────────────────── #
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("📩 ویدیو یا فایل ویدیویی دریافت شد")
     video = update.message.video or update.message.document
     if not video:
         await update.message.reply_text("⚠️ لطفاً یک ویدیو بفرست.")
@@ -87,6 +84,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     compress_with_progress(in_file, out_file)
 
     link = f"{public_url}/{out_file.name}"
+    logger.info(f"✅ فایل فشرده‌سازی شد: {link}")
     await update.message.reply_text(f"✅ فشرده‌سازی تمام شد!\n📥 لینک دانلود:\n{link}")
 
 # ──────────────────────────────── main ──────────────────────────────── #
@@ -94,6 +92,8 @@ async def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+
+    logger.info("🤖 ربات فعال است و منتظر پیام‌ها...")
     await app.run_polling()
 
 # ──────────────────────────────── اجرا ──────────────────────────────── #
