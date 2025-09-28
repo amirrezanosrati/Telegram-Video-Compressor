@@ -1,4 +1,5 @@
 import os
+import time
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -19,9 +20,26 @@ def progress_bar(current, total, length=20):
     percent = current / total
     filled = int(length * percent)
     bar = "█" * filled + "-" * (length - filled)
-    return f"[{bar}] {percent*100:.1f}%"
+    # نمایش درصد و حجم دانلود شده
+    return f"[{bar}] {percent*100:.1f}% ({current//1024}KB/{total//1024}KB)"
 
-# === دانلود فایل با نوار پیشرفت ===
+# === دانلود فایل با نوار پیشرفت واقعی ===
+last_update_time = 0  # برای محدود کردن آپدیت پیام
+
+async def update_progress(downloaded, total, status_message):
+    global last_update_time
+    now = time.time()
+    percent = downloaded / total * 100
+
+    # فقط هر 1 ثانیه یا هر 2 درصد آپدیت کن
+    if now - last_update_time > 1 or int(percent) % 2 == 0:
+        bar = progress_bar(downloaded, total)
+        try:
+            await status_message.edit(f"⏳ در حال دانلود...\n{bar}")
+        except:
+            pass  # اگر پیام حذف شد یا خطا گرفتیم، ignore
+        last_update_time = now
+
 async def download_file(message: Message):
     # تشخیص نوع فایل و نام فایل
     if message.document:
@@ -45,11 +63,6 @@ async def download_file(message: Message):
     # ارسال لینک عمومی بعد از اتمام
     file_url = f"{PUBLIC_URL}/{file_name}"
     await status_message.edit(f"✅ دانلود کامل شد!\n📎 لینک دانلود: {file_url}")
-
-# === به‌روزرسانی نوار پیشرفت ===
-async def update_progress(downloaded, total, status_message):
-    bar = progress_bar(downloaded, total)
-    await status_message.edit(f"⏳ در حال دانلود...\n{bar}")
 
 # === هندلر پیام‌ها ===
 @bot.on_message(filters.document | filters.video)
