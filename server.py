@@ -1,20 +1,16 @@
-# server.py
-import os
 from flask import Flask, send_from_directory, abort
+import os
 
 UPLOAD_FOLDER = "uploads"
 app = Flask(__name__)
 
-@app.route("/<path:filename>")
+@app.route("/<filename>")
 def serve_file(filename):
     path = os.path.join(UPLOAD_FOLDER, filename)
-    if not os.path.isfile(path):
-        return abort(404)
-    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
-
-@app.route("/")
-def index():
-    return "File server is running."
+    if os.path.exists(path):
+        return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
+    else:
+        abort(404, "File not found")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
