@@ -1,4 +1,4 @@
-name: Run Telegram File/Video Bot with cloudflared
+name: Run Telegram Bot with ngrok (Actions)
 
 on:
   workflow_dispatch:
@@ -17,59 +17,77 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies
+      - name: Install system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq curl unzip
 
-      - name: Install Python dependencies
+      - name: Install Python deps
         run: pip install -r requirements.txt
 
-      - name: Download cloudflared
+      - name: Download and install ngrok
         run: |
-          curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared
+          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip -o ngrok.zip
+          unzip -o ngrok.zip
+          sudo mv -f ngrok /usr/local/bin/ngrok
+          chmod +x /usr/local/bin/ngrok
+          echo "ngrok installed: $(ngrok version)"
 
-      - name: Start cloudflared tunnel and capture public URL
-        id: tunnel
+      - name: Configure ngrok auth token
         run: |
-          ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate --loglevel debug > cloudflared.log 2>&1 &
-          echo "waiting for cloudflared to provide a url (up to 120s)..."
-          FOUND=""
-          for i in $(seq 1 24); do   # 24 * 5s = 120s
-            sleep 5
-            # try to extract a trycloudflare url from the log
-            GREP=$(grep -oE 'https?://[a-zA-Z0-9._-]+(trycloudflare.com|trycloudflare|cfargotunnel.com)' cloudflared.log | head -n1 || true)
-            if [ -n "$GREP" ]; then
-              FOUND="$GREP"
-              break
-            fi
-            # also try the new cloudflared quick tunnel log format containing "url="
-            GREP2=$(grep -oE 'url=[^ ]+' cloudflared.log | sed -n '1p' || true)
-            if [ -n "$GREP2" ]; then
-              FOUND=$(echo "$GREP2" | sed 's/^url=//')
-              break
-            fi
-            echo "waiting... ($i)"
-          done
-
-          if [ -n "$FOUND" ]; then
-            echo "Found public url: $FOUND"
-            echo "PUBLIC_URL=$FOUND" >> $GITHUB_ENV
-          else
-            echo "No public url found after 120s. Dumping cloudflared.log:"
-            tail -n 200 cloudflared.log || true
+          if [ -z "${{ secrets.NGROK_AUTH_TOKEN }}" ]; then
+            echo "NGROK_AUTH_TOKEN secret is missing!"
             exit 1
           fi
+          /usr/local/bin/ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}" || true
+
+      - name: Start ngrok tunnel (background) and wait for public url
+        id: start_ngrok
+        run: |
+          echo "Starting ngrok..."
+          /usr/local/bin/ngrok http 8080 --log=stdout > ngrok.log 2>&1 &
+          NGROK_PID=$!
+          echo "ngrok pid: $NGROK_PID"
+          # wait up to 120s for tunnel to appear
+          FOUND_URL=""
+          for i in $(seq 1 24); do
+            sleep 5
+            # check for ERR_NGROK_108
+            if grep -q "ERR_NGROK_108" ngrok.log >/dev/null 2>&1; then
+              echo "ngrok reported ERR_NGROK_108 (session limit). Dumping ngrok.log:"
+              sed -n '1,200p' ngrok.log || true
+              echo "Please terminate other ngrok agent sessions in your ngrok dashboard or use a different authtoken."
+              exit 1
+            fi
+            # query ngrok API
+            if curl --silent http://127.0.0.1:4040/api/tunnels > tunnels.json 2>/dev/null; then
+              if jq -r '.tunnels[0].public_url' tunnels.json | grep -q "http"; then
+                FOUND_URL=$(jq -r '.tunnels[0].public_url' tunnels.json)
+                break
+              fi
+            fi
+            echo "waiting for ngrok... ($i)"
+          done
+
+          if [ -z "$FOUND_URL" ]; then
+            echo "No public URL found for ngrok after waiting. Dumping ngrok.log:"
+            sed -n '1,200p' ngrok.log || true
+            exit 1
+          fi
+
+          echo "Found ngrok public url: $FOUND_URL"
+          echo "PUBLIC_URL=$FOUND_URL" >> $GITHUB_ENV
+          echo "::set-output name=public_url::$FOUND_URL"
 
       - name: Show PUBLIC_URL
         run: echo "PUBLIC_URL is $PUBLIC_URL"
 
-      - name: Run the bot
+      - name: Run bot and server
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           PUBLIC_URL: ${{ env.PUBLIC_URL }}
           PORT: "8080"
-        run: python3 Script.py
+        run: |
+          python3 Script.py
