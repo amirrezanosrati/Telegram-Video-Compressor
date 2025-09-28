@@ -1,1 +1,4 @@
-telethon==1.30.0
+pyrogram==2.0.106
+tgcrypto
+flask
+requests
