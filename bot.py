@@ -2,10 +2,11 @@ import os
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
+# === متغیرهای محیطی ===
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-PUBLIC_URL = os.environ.get("PUBLIC_URL")  # URL عمومی cloudflared یا ngrok
+PUBLIC_URL = os.environ.get("PUBLIC_URL")  # لینک عمومی cloudflared/ngrok
 UPLOAD_FOLDER = "uploads"
 
 if not os.path.exists(UPLOAD_FOLDER):
@@ -13,23 +14,31 @@ if not os.path.exists(UPLOAD_FOLDER):
 
 bot = Client("file_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-
+# === نوار پیشرفت متن محور ===
 def progress_bar(current, total, length=20):
-    """برگرداندن درصد و نوار پیشرفت"""
     percent = current / total
     filled = int(length * percent)
     bar = "█" * filled + "-" * (length - filled)
     return f"[{bar}] {percent*100:.1f}%"
 
-
+# === دانلود فایل با نوار پیشرفت ===
 async def download_file(message: Message):
-    file_name = os.path.join(UPLOAD_FOLDER, message.document.file_name)
+    # تشخیص نوع فایل و نام فایل
+    if message.document:
+        file_name = message.document.file_name
+    elif message.video:
+        file_name = message.video.file_name or f"video_{message.video.file_id}.mp4"
+    else:
+        file_name = f"file_{message.message_id}"
+
+    file_path = os.path.join(UPLOAD_FOLDER, file_name)
+
     # پیام اولیه برای نوار پیشرفت
     status_message = await message.reply_text("⏳ شروع دانلود...")
-    
+
     # دانلود با callback برای پیشرفت
     await message.download(
-        file_name,
+        file_path,
         progress=lambda d, t: update_progress(d, t, status_message)
     )
 
@@ -37,12 +46,12 @@ async def download_file(message: Message):
     file_url = f"{PUBLIC_URL}/{file_name}"
     await status_message.edit(f"✅ دانلود کامل شد!\n📎 لینک دانلود: {file_url}")
 
-
+# === به‌روزرسانی نوار پیشرفت ===
 async def update_progress(downloaded, total, status_message):
     bar = progress_bar(downloaded, total)
     await status_message.edit(f"⏳ در حال دانلود...\n{bar}")
 
-
+# === هندلر پیام‌ها ===
 @bot.on_message(filters.document | filters.video)
 async def handle_media(client, message):
     try:
@@ -50,10 +59,10 @@ async def handle_media(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطا در پردازش فایل: {e}")
 
-
 @bot.on_message(filters.command("start"))
 async def start_command(client, message):
     await message.reply_text("🤖 ربات فعال شد! لطفا فایل یا ویدیو ارسال کنید.")
 
-
-bot.run()
+# === اجرای ربات ===
+if __name__ == "__main__":
+    bot.run()
