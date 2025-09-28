@@ -1,4 +1,4 @@
-pyrogram==2.0.112
+pyrogram
 tgcrypto
 flask
 pyngrok
