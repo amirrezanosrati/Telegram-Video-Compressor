@@ -1,93 +1,33 @@
-name: Run Telegram Bot with ngrok (Actions)
+name: Run Telegram Bot
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+    - uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg jq curl unzip
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # اگر requirements.txt ندارید:
+        # pip install pyrogram tgcrypto flask pyngrok
 
-      - name: Install Python deps
-        run: pip install -r requirements.txt
-
-      - name: Download and install ngrok
-        run: |
-          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip -o ngrok.zip
-          unzip -o ngrok.zip
-          sudo mv -f ngrok /usr/local/bin/ngrok
-          chmod +x /usr/local/bin/ngrok
-          echo "ngrok installed: $(ngrok version)"
-
-      - name: Configure ngrok auth token
-        run: |
-          if [ -z "${{ secrets.NGROK_AUTH_TOKEN }}" ]; then
-            echo "NGROK_AUTH_TOKEN secret is missing!"
-            exit 1
-          fi
-          /usr/local/bin/ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}" || true
-
-      - name: Start ngrok tunnel (background) and wait for public url
-        id: start_ngrok
-        run: |
-          echo "Starting ngrok..."
-          /usr/local/bin/ngrok http 8080 --log=stdout > ngrok.log 2>&1 &
-          NGROK_PID=$!
-          echo "ngrok pid: $NGROK_PID"
-          # wait up to 120s for tunnel to appear
-          FOUND_URL=""
-          for i in $(seq 1 24); do
-            sleep 5
-            # check for ERR_NGROK_108
-            if grep -q "ERR_NGROK_108" ngrok.log >/dev/null 2>&1; then
-              echo "ngrok reported ERR_NGROK_108 (session limit). Dumping ngrok.log:"
-              sed -n '1,200p' ngrok.log || true
-              echo "Please terminate other ngrok agent sessions in your ngrok dashboard or use a different authtoken."
-              exit 1
-            fi
-            # query ngrok API
-            if curl --silent http://127.0.0.1:4040/api/tunnels > tunnels.json 2>/dev/null; then
-              if jq -r '.tunnels[0].public_url' tunnels.json | grep -q "http"; then
-                FOUND_URL=$(jq -r '.tunnels[0].public_url' tunnels.json)
-                break
-              fi
-            fi
-            echo "waiting for ngrok... ($i)"
-          done
-
-          if [ -z "$FOUND_URL" ]; then
-            echo "No public URL found for ngrok after waiting. Dumping ngrok.log:"
-            sed -n '1,200p' ngrok.log || true
-            exit 1
-          fi
-
-          echo "Found ngrok public url: $FOUND_URL"
-          echo "PUBLIC_URL=$FOUND_URL" >> $GITHUB_ENV
-          echo "::set-output name=public_url::$FOUND_URL"
-
-      - name: Show PUBLIC_URL
-        run: echo "PUBLIC_URL is $PUBLIC_URL"
-
-      - name: Run bot and server
-        env:
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          PUBLIC_URL: ${{ env.PUBLIC_URL }}
-          PORT: "8080"
-        run: |
-          python3 Script.py
+    - name: Run Bot
+      env:
+        API_ID: ${{ secrets.API_ID }}
+        API_HASH: ${{ secrets.API_HASH }}
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
+      run: python3 Script.py
