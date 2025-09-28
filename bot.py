@@ -40,7 +40,6 @@ async def _update_progress(chat_id, msg_id, downloaded, total):
         pass
 
 async def download_with_progress(message: Message):
-    # تعیین اسم فایل
     if message.document:
         orig = message.document.file_name
     elif message.video:
@@ -51,19 +50,16 @@ async def download_with_progress(message: Message):
     safe_name = orig.replace("/", "_").replace("..", "_")
     local_path = os.path.join(UPLOAD_FOLDER, safe_name)
 
-    # پیام وضعیت اولیه
     info = await message.reply_text("⏳ شروع دانلود...")
     chat_id = info.chat.id
     msg_id = getattr(info, "message_id", getattr(info, "id", int(time.time())))
 
-    # callback برای Pyrogram
     def progress_callback(downloaded, total):
         try:
             bot.loop.create_task(_update_progress(chat_id, msg_id, downloaded, total))
         except Exception:
             pass
 
-    # دانلود فایل
     saved_path = await message.download(file_name=local_path, progress=progress_callback)
 
     if not PUBLIC_URL:
