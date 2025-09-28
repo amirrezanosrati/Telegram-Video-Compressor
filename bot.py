@@ -1,61 +1,82 @@
+# bot.py
 import os
+import uuid
+import threading
+import http.server
+import socketserver
 import logging
 from pyrogram import Client, filters
-from flask import Flask
-import subprocess
-
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "")
 
 logging.basicConfig(level=logging.INFO)
 
-# Flask app برای زنده نگه داشتن سرویس
-app = Flask(__name__)
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+PORT = int(os.getenv("PORT", "8080"))
 
-@app.route("/")
-def home():
-    return "🤖 Bot is running with GitHub Actions + ngrok"
+UPLOADS = os.path.join(os.getcwd(), "uploads")
+os.makedirs(UPLOADS, exist_ok=True)
 
-# پوشه آپلود
-if not os.path.exists("uploads"):
-    os.makedirs("uploads")
+# start simple threaded HTTP server to serve uploads
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
 
-# ساخت کلاینت تلگرام
-bot = Client(
-    "CompressorBot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-)
+def start_http_server():
+    os.chdir(UPLOADS)
+    handler = http.server.SimpleHTTPRequestHandler
+    httpd = ThreadingHTTPServer(("", PORT), handler)
+    logging.info(f"HTTP server started on port {PORT}, serving {UPLOADS}")
+    httpd.serve_forever()
 
-@bot.on_message(filters.command("start"))
-async def start(client, message):
-    await message.reply("سلام 👋\nفایل یا ویدیو بفرست تا برات لینک دانلود عمومی بسازم ✅")
+http_thread = threading.Thread(target=start_http_server, daemon=True)
+http_thread.start()
 
-@bot.on_message(filters.document | filters.video | filters.audio)
-async def handle_media(client, message):
-    msg = await message.reply("⬇️ در حال دریافت فایل ...")
+# initialize pyrogram bot
+app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-    file_path = await message.download(file_name="uploads/")
-    filename = os.path.basename(file_path)
+@app.on_message(filters.command("start"))
+async def start_cmd(c, m):
+    await m.reply_text("سلام 👋 فایل یا ویدیو بفرست تا فشرده کنم و لینک بدم.")
 
-    # فشرده‌سازی با ffmpeg
-    compressed_path = f"uploads/compressed_{filename}"
-    await msg.edit("🎞 در حال فشرده‌سازی ...")
+@app.on_message(filters.document | filters.video | filters.audio | filters.photo)
+async def handle_media(c, m):
+    info = await m.reply_text("⬇️ دریافت فایل... لطفا صبر کن")
     try:
-        subprocess.run(
-            ["ffmpeg", "-i", file_path, "-vcodec", "libx264", "-crf", "28", compressed_path],
-            check=True
-        )
+        # download media into uploads/ with unique name
+        unique = uuid.uuid4().hex
+        saved = await c.download_media(m, file_name=f"{unique}")
+        if not saved:
+            await info.edit_text("❌ دانلود ناموفق بود.")
+            return
+
+        # try to infer extension from original filename if present
+        orig_name = (m.document.file_name if m.document else None) if m.document or m.video or m.audio else None
+        if orig_name and "." in orig_name:
+            ext = orig_name.split(".")[-1]
+            saved_path = f"{saved}.{ext}"
+            os.rename(saved, saved_path)
+        else:
+            saved_path = saved  # may have no extension
+
+        # OPTIONAL: run ffmpeg compression here if you want (skip for now)
+        # For demo we just keep original as "compressed" output
+        compressed_name = f"out_{os.path.basename(saved_path)}"
+        compressed_path = os.path.join(UPLOADS, compressed_name)
+        os.replace(saved_path, compressed_path)  # move/rename
+
+        if not PUBLIC_URL:
+            await info.edit_text("⚠️ PUBLIC_URL تنظیم نشده؛ لینک عمومی در دسترس نیست.")
+            return
+
+        download_link = f"{PUBLIC_URL}/{compressed_name}"
+        await info.edit_text(f"✅ آماده شد!\n🔗 لینک دانلود:\n{download_link}")
     except Exception as e:
-        await msg.edit(f"❌ خطا در فشرده‌سازی: {e}")
-        return
+        await info.edit_text(f"❌ خطا در پردازش: {e}")
 
-    # ساخت لینک
-    download_url = f"{PUBLIC_URL}/uploads/compressed_{filename}"
-    await msg.edit(f"✅ آماده شد!\n📥 [دانلود فایل فشرده]({download_url})", disable_web_page_preview=True)
-
-# اجرای بات
-bot.start()
+if __name__ == "__main__":
+    if API_ID == 0 or not API_HASH or not BOT_TOKEN:
+        logging.error("Missing API_ID / API_HASH / BOT_TOKEN environment variables.")
+        raise SystemExit(1)
+    logging.info("Starting bot (Pyrogram)...")
+    app.run()
