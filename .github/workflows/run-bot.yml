@@ -1,4 +1,4 @@
-name: Run Bot with cloudflared (Actions)
+name: Run Telegram File/Video Bot with cloudflared
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Setup Python
@@ -17,12 +17,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system deps (ffmpeg, jq, curl)
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg jq curl
+          sudo apt-get install -y ffmpeg jq curl unzip
 
-      - name: Install Python deps
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
       - name: Download cloudflared
@@ -33,22 +33,32 @@ jobs:
       - name: Start cloudflared tunnel and capture public URL
         id: tunnel
         run: |
-          # start cloudflared in background and save log
-          ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate > cloudflared.log 2>&1 &
-          echo "waiting for cloudflared to provide a url..."
-          for i in $(seq 1 30); do
-            sleep 1
-            if grep -oE 'https?://[a-zA-Z0-9_.-]+(trycloudflare.com|trycloudflare)|(cfargotunnel.com)' cloudflared.log | head -n1 > public_url.txt; then
+          ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate --loglevel debug > cloudflared.log 2>&1 &
+          echo "waiting for cloudflared to provide a url (up to 120s)..."
+          FOUND=""
+          for i in $(seq 1 24); do   # 24 * 5s = 120s
+            sleep 5
+            # try to extract a trycloudflare url from the log
+            GREP=$(grep -oE 'https?://[a-zA-Z0-9._-]+(trycloudflare.com|trycloudflare|cfargotunnel.com)' cloudflared.log | head -n1 || true)
+            if [ -n "$GREP" ]; then
+              FOUND="$GREP"
               break
             fi
+            # also try the new cloudflared quick tunnel log format containing "url="
+            GREP2=$(grep -oE 'url=[^ ]+' cloudflared.log | sed -n '1p' || true)
+            if [ -n "$GREP2" ]; then
+              FOUND=$(echo "$GREP2" | sed 's/^url=//')
+              break
+            fi
+            echo "waiting... ($i)"
           done
-          if [ -s public_url.txt ]; then
-            PUBLIC_URL=$(head -n1 public_url.txt)
-            echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-            echo "Found public url: $PUBLIC_URL"
+
+          if [ -n "$FOUND" ]; then
+            echo "Found public url: $FOUND"
+            echo "PUBLIC_URL=$FOUND" >> $GITHUB_ENV
           else
-            echo "No public url found. Dumping cloudflared.log:"
-            tail -n +1 cloudflared.log
+            echo "No public url found after 120s. Dumping cloudflared.log:"
+            tail -n 200 cloudflared.log || true
             exit 1
           fi
 
