@@ -5,11 +5,18 @@ define('API_URL', 'https://api.telegram.org/bot' . BOT_TOKEN . '/');
 define('MAX_FILE_SIZE', 2 * 1024 * 1024 * 1024); // 2GB
 define('MAX_RUNTIME', getenv('MAX_RUNTIME') ?: 360); // 6 ساعت
 
-// دایرکتوری‌های موقت
-define('TMP_DIR', sys_get_temp_dir() . '/telegram_bot/');
+// دایرکتوری‌های موقت - استفاده از /tmp مستقیم
+define('TMP_DIR', '/tmp/telegram_bot/');
 if (!file_exists(TMP_DIR)) {
     mkdir(TMP_DIR, 0755, true);
 }
+
+// تنظیمات PHP برای فایل‌های بزرگ
+ini_set('memory_limit', '1024M');
+ini_set('max_execution_time', 0);
+ini_set('upload_max_filesize', '2048M');
+ini_set('post_max_size', '2048M');
+ini_set('max_input_time', 0);
 
 // زمان شروع اجرا
 define('START_TIME', time());
@@ -41,11 +48,17 @@ function format_size($bytes) {
 }
 
 // ایجاد نوار پیشرفت
-function create_progress_bar($percentage, $length = 20) {
+function create_progress_bar($percentage, $length = 15) {
     $filled = round(($percentage / 100) * $length);
     $empty = $length - $filled;
     
-    $bar = '█' . str_repeat('█', $filled) . str_repeat('▒', $empty);
+    $bar = str_repeat('█', $filled) . str_repeat('▒', $empty);
     return $bar . ' ' . round($percentage, 1) . '%';
+}
+
+// بررسی فضای دیسک
+function check_disk_space($required_bytes) {
+    $free_space = disk_free_space('/tmp');
+    return $free_space >= ($required_bytes * 2); // نیاز به 2 برابر فضای آزاد
 }
 ?>
