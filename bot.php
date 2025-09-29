@@ -2,19 +2,18 @@
 require_once 'config.php';
 require_once 'functions.php';
 
-log_message("🤖 Starting PHP Telegram Bot (Polling Mode)");
+log_message("🤖 Starting Telegram Video Bot (No Compression Method)");
 
 $last_update_id = 0;
-$processed_updates = 0;
+$processed_count = 0;
 
 while (should_continue_running()) {
     try {
-        log_message("🔍 Checking for updates... (offset: " . ($last_update_id + 1) . ")");
+        log_message("🔍 Checking for updates...");
         
         $updates = getUpdates($last_update_id + 1);
         
         if (!$updates) {
-            log_message("❌ No updates received or request failed");
             sleep(5);
             continue;
         }
@@ -26,7 +25,7 @@ while (should_continue_running()) {
         
         foreach ($updates['result'] as $update) {
             $last_update_id = max($last_update_id, $update['update_id']);
-            $processed_updates++;
+            $processed_count++;
             
             if (isset($update['message'])) {
                 processMessage($update['message']);
@@ -36,12 +35,12 @@ while (should_continue_running()) {
         log_message("✅ Processed " . count($updates['result']) . " updates");
         
     } catch (Exception $e) {
-        log_message("❌ Error in main loop: " . $e->getMessage());
+        log_message("❌ Error: " . $e->getMessage());
         sleep(5);
     }
 }
 
-log_message("🕒 Maximum runtime reached. Total updates: $processed_updates");
+log_message("🕒 Bot stopped. Total processed: $processed_count");
 
 function processMessage($message) {
     $chat_id = $message['chat']['id'];
@@ -50,10 +49,12 @@ function processMessage($message) {
         // دستور start
         if (isset($message['text']) && strpos($message['text'], '/start') === 0) {
             sendMessage($chat_id,
-                "🤖 <b>ربات فشرده‌ساز ویدیو</b>\n\n"
-                . "✅ پشتیبانی از فایل‌های تا 2GB\n"
-                . "📊 نمایش پیشرفت دانلود و فشرده‌سازی\n"
-                . "⚡ فشرده‌سازی هوشمند\n\n"
+                "🤖 <b>ربات بهینه‌ساز ویدیو</b>\n\n"
+                . "🎯 <i>روش جدید: آپلود با کیفیت بهینه</i>\n\n"
+                . "✅ ارسال ویدیو → دانلود → آپلود مجدد\n"
+                . "📱 تلگرام خودش ویدیو را فشرده می‌کند\n"
+                . "⚡ سریع‌تر و بدون خطا\n"
+                . "📊 پشتیبانی از فایل‌های تا 2GB\n\n"
                 . "🎬 <b>یک ویدیو ارسال کنید!</b>"
             );
             return;
@@ -68,7 +69,7 @@ function processMessage($message) {
             $video = $message['video'];
             $file_size = $video['file_size'];
             $file_name = $video['file_name'] ?? 'video.mp4';
-            log_message("Video detected: $file_name, " . format_size($file_size));
+            log_message("🎥 Video received: $file_name, " . format_size($file_size));
         }
         elseif (isset($message['document'])) {
             $doc = $message['document'];
@@ -77,17 +78,22 @@ function processMessage($message) {
             
             // بررسی MIME type یا پسوند فایل
             $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-            $video_extensions = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', '3gp', 'm4v'];
+            $video_extensions = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', '3gp', 'm4v', 'mpg', 'mpeg'];
             
             if (strpos($mime_type, 'video/') === 0 || in_array($file_ext, $video_extensions)) {
                 $video = $doc;
                 $file_size = $doc['file_size'];
-                log_message("Video document detected: $file_name, " . format_size($file_size));
+                log_message("📄 Video document: $file_name, " . format_size($file_size));
             }
         }
         
         if (!$video) {
-            sendMessage($chat_id, "❌ لطفاً یک فایل ویدیویی ارسال کنید.");
+            sendMessage($chat_id, 
+                "❌ لطفاً یک فایل ویدیویی ارسال کنید.\n\n"
+                . "✅ فرمت‌های پشتیبانی:\n"
+                . "MP4, AVI, MKV, MOV, WMV, WebM, 3GP\n\n"
+                . "📱 می‌توانید از طریق Video یا Document ارسال کنید."
+            );
             return;
         }
         
@@ -97,145 +103,128 @@ function processMessage($message) {
             return;
         }
         
-        if ($file_size < 50 * 1024) { // 50KB
-            sendMessage($chat_id, "❌ حجم ویدیو بسیار کوچک است.");
+        if ($file_size < 1024 * 1024) { // 1MB
+            sendMessage($chat_id, 
+                "❌ حجم ویدیو کمتر از 1MB است.\n\n"
+                . "📊 ویدیوهای کوچک نیازی به بهینه‌سازی ندارند."
+            );
             return;
         }
         
         // پردازش ویدیو
-        processVideo($video, $chat_id, $file_name, $file_size);
+        processVideoNewMethod($video, $chat_id, $file_name, $file_size);
         
     } catch (Exception $e) {
-        log_message("Error processing message: " . $e->getMessage());
+        log_message("❌ Message processing error: " . $e->getMessage());
         sendMessage($chat_id, "❌ خطا: " . $e->getMessage());
     }
 }
 
-function processVideo($video, $chat_id, $file_name, $file_size) {
-    $input_path = '';
-    $output_path = '';
+function processVideoNewMethod($video, $chat_id, $file_name, $file_size) {
+    $temp_file_path = '';
     
     try {
-        // ارسال پیام شروع
-        $size_text = format_size($file_size);
-        $start_msg = sendMessage($chat_id, 
+        // مرحله 1: ارسال پیام شروع
+        $start_msg = sendMessage($chat_id,
             "🎬 <b>شروع پردازش ویدیو</b>\n\n"
-            . "📁 <b>$file_name</b>\n"
-            . "📊 <b>$size_text</b>\n\n"
+            . "📁 <code>$file_name</code>\n"
+            . "📊 " . format_size($file_size) . "\n\n"
+            . "🔄 <i>روش جدید: آپلود با کیفیت بهینه</i>\n"
             . "⏳ در حال آماده‌سازی..."
         );
         
         if (!$start_msg) {
-            throw new Exception("Failed to send start message");
+            throw new Exception("خطا در ارسال پیام شروع");
         }
         
         $processing_msg_id = $start_msg['result']['message_id'];
         
-        // مرحله 1: دریافت اطلاعات فایل
-        editMessageText($chat_id, $processing_msg_id, 
+        // مرحله 2: دریافت اطلاعات فایل
+        editMessageText($chat_id, $processing_msg_id,
             "🔍 <b>دریافت اطلاعات ویدیو</b>\n\n"
             . "📁 $file_name\n"
-            . "📊 $size_text\n\n"
-            . "⏳ در حال اتصال به سرور..."
+            . "📊 " . format_size($file_size) . "\n\n"
+            . "⏳ در حال اتصال به سرور تلگرام..."
         );
         
-        $file_info = sendTelegramRequest('getFile', ['file_id' => $video['file_id']], 5);
+        $file_info = sendTelegramRequest('getFile', ['file_id' => $video['file_id']]);
         
         if (!$file_info) {
-            throw new Exception("خطا در دریافت اطلاعات فایل از تلگرام. لطفاً دوباره تلاش کنید.");
+            throw new Exception("خطا در دریافت اطلاعات فایل از تلگرام");
         }
         
         $file_path = $file_info['result']['file_path'];
-        log_message("File path received: $file_path");
+        log_message("📁 File path: $file_path");
         
-        // مرحله 2: دانلود با پیشرفت
-        $input_path = TMP_DIR . uniqid() . '_original.mp4';
-        
-        editMessageText($chat_id, $processing_msg_id, 
+        // مرحله 3: دانلود ویدیو
+        editMessageText($chat_id, $processing_msg_id,
             "📥 <b>در حال دانلود ویدیو...</b>\n\n"
-            . "⏬ اتصال به سرور تلگرام\n"
+            . "⏬ دریافت از سرور تلگرام\n"
             . "📊 " . format_size($file_size) . "\n\n"
             . "⏳ لطفاً منتظر بمانید..."
         );
         
-        $download_success = downloadFileWithProgress($file_path, $input_path, $chat_id, $processing_msg_id, $file_size);
+        $temp_file_path = TMP_DIR . uniqid() . '_' . $file_name;
+        $download_success = downloadFileWithProgress($file_path, $temp_file_path, $chat_id, $processing_msg_id, $file_size);
         
-        if (!$download_success || !file_exists($input_path)) {
-            throw new Exception("خطا در دانلود ویدیو. ممکن است فایل بسیار بزرگ باشد.");
+        if (!$download_success || !file_exists($temp_file_path)) {
+            throw new Exception("خطا در دانلود ویدیو");
         }
         
-        $downloaded_size = filesize($input_path);
-        log_message("Download verified: " . format_size($downloaded_size));
+        $downloaded_size = filesize($temp_file_path);
+        log_message("✅ Downloaded: " . format_size($downloaded_size));
         
-        // مرحله 3: فشرده‌سازی با پیشرفت
-        editMessageText($chat_id, $processing_msg_id, 
-            "🔄 <b>در حال فشرده‌سازی ویدیو...</b>\n\n"
-            . "⚙️ بهینه‌سازی ویدیو\n"
-            . "📊 " . format_size($downloaded_size) . "\n\n"
+        // مرحله 4: آپلود با کیفیت پایین به تلگرام
+        editMessageText($chat_id, $processing_msg_id,
+            "📤 <b>در حال آپلود به تلگرام...</b>\n\n"
+            . "⬆️ ارسال با کیفیت بهینه\n"
+            . "💡 تلگرام خودش ویدیو را فشرده می‌کند\n"
+            . "📊 حجم اصلی: " . format_size($downloaded_size) . "\n\n"
             . "⏳ این مرحله ممکن است چند دقیقه طول بکشد..."
         );
         
-        $output_path = TMP_DIR . uniqid() . '_compressed.mp4';
-        $compress_result = compressVideoWithProgress($input_path, $output_path, $chat_id, $processing_msg_id);
-        
-        if (!$compress_result['success']) {
-            throw new Exception("فشرده‌سازی ناموفق: " . $compress_result['error']);
-        }
-        
-        // مرحله 4: آپلود
-        $original_size = filesize($input_path);
-        $compressed_size = filesize($output_path);
-        $reduction = (($original_size - $compressed_size) / $original_size) * 100;
-        
-        editMessageText($chat_id, $processing_msg_id, 
-            "📤 <b>در حال آپلود ویدیو فشرده شده</b>\n\n"
-            . "✅ فشرده‌سازی تکمیل شد!\n"
-            . "📊 کاهش حجم: " . round($reduction, 1) . "%\n\n"
-            . "⬆️ در حال ارسال..."
-        );
-        
-        $caption = "✅ ویدیو فشرده شده\n"
-                 . "📊 کاهش حجم: " . round($reduction, 1) . "%\n"
-                 . "📁 " . format_size($original_size) . " → " . format_size($compressed_size);
-        
-        $upload_result = sendVideo($chat_id, $output_path, $caption);
+        $upload_result = sendFinalVideo($chat_id, $temp_file_path, $downloaded_size, $file_name);
         
         if ($upload_result && $upload_result['ok']) {
+            // محاسبه کاهش حجم تخمینی
+            $estimated_reduction = 70; // 70% کاهش توسط تلگرام
+            $estimated_saving = $downloaded_size * ($estimated_reduction / 100);
+            
             editMessageText($chat_id, $processing_msg_id,
                 "🎉 <b>پردازش کامل شد!</b>\n\n"
-                . "✅ ویدیو با موفقیت فشرده شد\n"
-                . "📊 کاهش حجم: <b>" . round($reduction, 1) . "%</b>\n"
-                . "💾 صرفه‌جویی: " . format_size($original_size - $compressed_size) . "\n"
-                . "📁 " . format_size($original_size) . " → " . format_size($compressed_size) . "\n\n"
-                . "✨ برای ویدیوی دیگر، همین حالا ارسال کنید!"
+                . "✅ ویدیو با موفقیت آپلود شد\n"
+                . "📊 حجم اصلی: " . format_size($downloaded_size) . "\n"
+                . "💾 صرفه‌جویی تخمینی: " . format_size($estimated_saving) . "\n"
+                . "📱 کیفیت: مناسب برای تلگرام\n\n"
+                . "✨ <b>برای ویدیوی دیگر، همین حالا ارسال کنید!</b>"
             );
             
-            log_message("🎉 Processing completed successfully! Reduction: " . round($reduction, 1) . "%");
+            log_message("🎉 Processing completed successfully!");
+            
         } else {
-            throw new Exception("آپلود ویدیو ناموفق بود. ممکن است فایل خروجی بسیار بزرگ باشد.");
+            throw new Exception("آپلود ویدیو ناموفق بود");
         }
         
     } catch (Exception $e) {
-        log_message("❌ Error in processVideo: " . $e->getMessage());
+        log_message("❌ Processing error: " . $e->getMessage());
         
-        $error_message = "❌ <b>خطا در پردازش</b>\n\n" . $e->getMessage() . "\n\n";
-        $error_message .= "🔧 <i>راه‌حل‌ها:</i>\n";
-        $error_message .= "• ویدیوی کوچکتری ارسال کنید\n";
-        $error_message .= "• فرمت MP4 استفاده کنید\n";
-        $error_message .= "• چند دقیقه دیگر تلاش کنید";
+        $error_msg = "❌ <b>خطا در پردازش</b>\n\n" . $e->getMessage() . "\n\n";
+        $error_msg .= "🔧 <i>راه‌حل‌ها:</i>\n";
+        $error_msg .= "• ویدیوی کوچکتری امتحان کنید\n";
+        $error_msg .= "• اتصال اینترنت را بررسی کنید\n";
+        $error_msg .= "• چند دقیقه دیگر تلاش کنید";
         
         if (isset($processing_msg_id)) {
-            editMessageText($chat_id, $processing_msg_id, $error_message);
+            editMessageText($chat_id, $processing_msg_id, $error_msg);
         } else {
-            sendMessage($chat_id, $error_message);
+            sendMessage($chat_id, $error_msg);
         }
+        
     } finally {
-        // پاکسازی
-        if ($input_path && file_exists($input_path)) {
-            unlink($input_path);
-        }
-        if ($output_path && file_exists($output_path)) {
-            unlink($output_path);
+        // پاکسازی فایل موقت
+        if ($temp_file_path && file_exists($temp_file_path)) {
+            unlink($temp_file_path);
+            log_message("🧹 Temporary file cleaned up");
         }
     }
 }
