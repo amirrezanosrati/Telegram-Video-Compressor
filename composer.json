@@ -1,6 +1,7 @@
 {
-    "name": "telegram-video-bot",
+    "name": "telegram-video-bot/compressor",
     "type": "project",
+    "description": "Telegram Video Compression Bot",
     "require": {
         "php": ">=8.0",
         "ext-curl": "*",
@@ -8,6 +9,19 @@
         "ext-mbstring": "*"
     },
     "autoload": {
-        "files": ["config.php", "functions.php"]
-    }
+        "files": [
+            "config.php",
+            "functions.php"
+        ]
+    },
+    "scripts": {
+        "post-autoload-dump": []
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
 }
