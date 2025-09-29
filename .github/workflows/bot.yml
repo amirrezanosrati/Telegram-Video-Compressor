@@ -1,0 +1,42 @@
+name: PHP Telegram Video Bot
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    # اجرای هر 5 دقیقه به مدت 6 ساعت
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 ساعت
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: curl, json, mbstring, zip
+        tools: composer
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y wget curl
+        
+    - name: Install PHP dependencies
+      run: |
+        composer install --no-dev --optimize-autoloader
+        
+    - name: Run PHP Bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        MAX_RUNTIME: 360  # 6 ساعت به دقیقه
+      run: |
+        php bot.php
