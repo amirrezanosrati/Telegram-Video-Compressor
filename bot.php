@@ -2,7 +2,7 @@
 require_once 'config.php';
 require_once 'functions.php';
 
-log_message("🤖 Starting Telegram Video Bot (No Compression Method)");
+log_message("🤖 Starting Telegram Video Bot with Upload Progress");
 
 $last_update_id = 0;
 $processed_count = 0;
@@ -50,10 +50,10 @@ function processMessage($message) {
         if (isset($message['text']) && strpos($message['text'], '/start') === 0) {
             sendMessage($chat_id,
                 "🤖 <b>ربات بهینه‌ساز ویدیو</b>\n\n"
-                . "🎯 <i>روش جدید: آپلود با کیفیت بهینه</i>\n\n"
-                . "✅ ارسال ویدیو → دانلود → آپلود مجدد\n"
-                . "📱 تلگرام خودش ویدیو را فشرده می‌کند\n"
-                . "⚡ سریع‌تر و بدون خطا\n"
+                . "🎯 <i>با نمایش پیشرفت زنده</i>\n\n"
+                . "📥 نوار پیشرفت دانلود\n"
+                . "📤 نوار پیشرفت آپلود\n"
+                . "⚡ سریع و بدون خطا\n"
                 . "📊 پشتیبانی از فایل‌های تا 2GB\n\n"
                 . "🎬 <b>یک ویدیو ارسال کنید!</b>"
             );
@@ -112,7 +112,7 @@ function processMessage($message) {
         }
         
         // پردازش ویدیو
-        processVideoNewMethod($video, $chat_id, $file_name, $file_size);
+        processVideoWithProgress($video, $chat_id, $file_name, $file_size);
         
     } catch (Exception $e) {
         log_message("❌ Message processing error: " . $e->getMessage());
@@ -120,7 +120,7 @@ function processMessage($message) {
     }
 }
 
-function processVideoNewMethod($video, $chat_id, $file_name, $file_size) {
+function processVideoWithProgress($video, $chat_id, $file_name, $file_size) {
     $temp_file_path = '';
     
     try {
@@ -129,7 +129,7 @@ function processVideoNewMethod($video, $chat_id, $file_name, $file_size) {
             "🎬 <b>شروع پردازش ویدیو</b>\n\n"
             . "📁 <code>$file_name</code>\n"
             . "📊 " . format_size($file_size) . "\n\n"
-            . "🔄 <i>روش جدید: آپلود با کیفیت بهینه</i>\n"
+            . "📥 دانلود → 📤 آپلود\n"
             . "⏳ در حال آماده‌سازی..."
         );
         
@@ -156,7 +156,7 @@ function processVideoNewMethod($video, $chat_id, $file_name, $file_size) {
         $file_path = $file_info['result']['file_path'];
         log_message("📁 File path: $file_path");
         
-        // مرحله 3: دانلود ویدیو
+        // مرحله 3: دانلود ویدیو با پیشرفت
         editMessageText($chat_id, $processing_msg_id,
             "📥 <b>در حال دانلود ویدیو...</b>\n\n"
             . "⏬ دریافت از سرور تلگرام\n"
@@ -174,22 +174,26 @@ function processVideoNewMethod($video, $chat_id, $file_name, $file_size) {
         $downloaded_size = filesize($temp_file_path);
         log_message("✅ Downloaded: " . format_size($downloaded_size));
         
-        // مرحله 4: آپلود با کیفیت پایین به تلگرام
+        // مرحله 4: آپلود با کیفیت پایین به تلگرام با پیشرفت
         editMessageText($chat_id, $processing_msg_id,
-            "📤 <b>در حال آپلود به تلگرام...</b>\n\n"
+            "📤 <b>آماده برای آپلود...</b>\n\n"
             . "⬆️ ارسال با کیفیت بهینه\n"
             . "💡 تلگرام خودش ویدیو را فشرده می‌کند\n"
             . "📊 حجم اصلی: " . format_size($downloaded_size) . "\n\n"
-            . "⏳ این مرحله ممکن است چند دقیقه طول بکشد..."
+            . "⏳ اتصال به سرور تلگرام..."
         );
         
-        $upload_result = sendFinalVideo($chat_id, $temp_file_path, $downloaded_size, $file_name);
+        // کمی تاخیر قبل از شروع آپلود
+        sleep(2);
+        
+        $upload_result = sendFinalVideo($chat_id, $processing_msg_id, $temp_file_path, $downloaded_size, $file_name);
         
         if ($upload_result && $upload_result['ok']) {
             // محاسبه کاهش حجم تخمینی
             $estimated_reduction = 70; // 70% کاهش توسط تلگرام
             $estimated_saving = $downloaded_size * ($estimated_reduction / 100);
             
+            // پیام نهایی موفقیت
             editMessageText($chat_id, $processing_msg_id,
                 "🎉 <b>پردازش کامل شد!</b>\n\n"
                 . "✅ ویدیو با موفقیت آپلود شد\n"
