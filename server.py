@@ -1,18 +1,71 @@
-# server.py
-from flask import Flask, send_from_directory, abort
 import os
+import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import subprocess
 
-UPLOAD_FOLDER = "uploads"
-app = Flask(__name__)
+# مقادیر خودتو اینجا بزار
+API_ID = 123456
+API_HASH = "your_api_hash"
+BOT_TOKEN = "your_bot_token"
 
-@app.route("/<filename>")
-def serve_file(filename):
-    path = os.path.join(UPLOAD_FOLDER, filename)
-    if os.path.exists(path):
-        return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
-    else:
-        abort(404, "File not found")
+app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+# مسیر پوشه دانلود
+DOWNLOAD_DIR = "downloads"
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
+
+
+# وقتی ویدیو فرستاده میشه
+@app.on_message(filters.video)
+async def video_handler(client, message):
+    file_path = await message.download(DOWNLOAD_DIR)
+    await message.reply_text(
+        "کیفیت خروجی رو انتخاب کن:",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("📹 720p", callback_data=f"compress|{file_path}|720")],
+                [InlineKeyboardButton("📹 480p", callback_data=f"compress|{file_path}|480")]
+            ]
+        )
+    )
+
+
+# هندلر برای دکمه‌ها
+@app.on_callback_query()
+async def callback_handler(client, callback_query):
+    data = callback_query.data.split("|")
+    if data[0] == "compress":
+        file_path = data[1]
+        quality = data[2]
+
+        await callback_query.message.edit_text(f"⏳ در حال فشرده‌سازی به {quality}p ...")
+
+        output_path = f"{file_path}_{quality}p.mp4"
+
+        # دستور ffmpeg
+        if quality == "720":
+            cmd = ["ffmpeg", "-i", file_path, "-vf", "scale=-1:720", "-c:v", "libx264", "-crf", "28", "-preset", "veryfast", output_path]
+        elif quality == "480":
+            cmd = ["ffmpeg", "-i", file_path, "-vf", "scale=-1:480", "-c:v", "libx264", "-crf", "28", "-preset", "veryfast", output_path]
+
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        await process.communicate()
+
+        if os.path.exists(output_path):
+            await client.send_video(
+                chat_id=callback_query.message.chat.id,
+                video=output_path,
+                caption=f"✅ ویدیو فشرده شده در {quality}p"
+            )
+            os.remove(output_path)
+        else:
+            await callback_query.message.edit_text("❌ خطا در فشرده‌سازی")
+
+        # پاک کردن فایل اصلی بعد از کار
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+
+app.run()
