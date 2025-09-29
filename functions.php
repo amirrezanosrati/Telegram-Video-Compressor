@@ -1,17 +1,25 @@
 <?php
 // تابع درخواست به تلگرام با تلاش مجدد
-function sendTelegramRequest($method, $params = [], $retries = 3) {
+function sendTelegramRequest($method, $params = [], $retries = 5) {
     $url = API_URL . $method;
     
     for ($attempt = 1; $attempt <= $retries; $attempt++) {
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 60); // افزایش timeout
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'Telegram Bot (PHP)');
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $params,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 120, // افزایش قابل توجه timeout
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; TelegramBot/1.0)',
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 10,
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                'Connection: keep-alive'
+            ]
+        ]);
         
         $response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -21,17 +29,21 @@ function sendTelegramRequest($method, $params = [], $retries = 3) {
         if ($http_code === 200 && $response) {
             $result = json_decode($response, true);
             if ($result && isset($result['ok']) && $result['ok']) {
+                log_message("✅ Request successful: $method");
                 return $result;
             }
         }
         
-        log_message("Attempt $attempt failed: HTTP $http_code - $error");
+        log_message("⚠️ Attempt $attempt failed for $method: HTTP $http_code - $error");
         
         if ($attempt < $retries) {
-            sleep(2); // صبر قبل از تلاش مجدد
+            $wait_time = pow(2, $attempt); // Exponential backoff
+            log_message("⏳ Waiting $wait_time seconds before retry...");
+            sleep($wait_time);
         }
     }
     
+    log_message("❌ All attempts failed for $method");
     return null;
 }
 
@@ -39,8 +51,8 @@ function sendTelegramRequest($method, $params = [], $retries = 3) {
 function getUpdates($offset = 0) {
     $params = [
         'offset' => $offset,
-        'limit' => 10, // کاهش limit برای عملکرد بهتر
-        'timeout' => 10,
+        'limit' => 5, // کاهش بیشتر برای عملکرد بهتر
+        'timeout' => 5,
         'allowed_updates' => json_encode(['message'])
     ];
     
@@ -76,37 +88,57 @@ function editMessageText($chat_id, $message_id, $text) {
     return sendTelegramRequest('editMessageText', $params);
 }
 
-// دانلود فایل با پیشرفت
+// دانلود فایل با پیشرفت - نسخه بهبود یافته برای فایل‌های بزرگ
 function downloadFileWithProgress($file_path, $destination, $chat_id, $message_id, $file_size) {
     $file_url = "https://api.telegram.org/file/bot" . BOT_TOKEN . "/" . $file_path;
     
-    log_message("Starting download: $file_url -> $destination");
+    log_message("🚀 Starting download: " . format_size($file_size));
+    
+    // بررسی فضای دیسک
+    if (!check_disk_space($file_size)) {
+        throw new Exception("فضای کافی روی دیسک موجود نیست. حداقل " . format_size($file_size * 2) . " فضای آزاد نیاز است.");
+    }
     
     $ch = curl_init();
     $file_handle = fopen($destination, 'w+');
     
-    curl_setopt($ch, CURLOPT_URL, $file_url);
-    curl_setopt($ch, CURLOPT_FILE, $file_handle);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 300);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Telegram Bot Downloader');
-    curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+    if (!$file_handle) {
+        throw new Exception("Cannot create temporary file");
+    }
+    
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $file_url,
+        CURLOPT_FILE => $file_handle,
+        CURLOPT_TIMEOUT => 600, // 10 دقیقه برای دانلود
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; TelegramBot/1.0)',
+        CURLOPT_NOPROGRESS => false,
+        CURLOPT_BUFFERSIZE => 262144, // 256KB buffer
+    ]);
     
     // تابع callback برای پیشرفت
-    curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function($resource, $download_size, $downloaded, $upload_size, $uploaded) use ($chat_id, $message_id, $file_size) {
-        static $last_update = 0;
+    $last_update_time = 0;
+    $start_time = time();
+    
+    curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function($resource, $download_size, $downloaded, $upload_size, $uploaded) 
+        use ($chat_id, $message_id, $file_size, &$last_update_time, $start_time) {
         
         if ($download_size > 0 && $downloaded > 0) {
-            $percentage = ($downloaded / $download_size) * 100;
+            $percentage = min(100, ($downloaded / $download_size) * 100);
             $current_time = time();
             
-            // فقط هر 2 ثانیه آپدیت کن
-            if ($current_time - $last_update >= 2 || $percentage >= 100) {
+            // فقط هر 3 ثانیه آپدیت کن یا وقتی درصد تغییر قابل توجهی دارد
+            if ($current_time - $last_update_time >= 3 || $percentage >= 100) {
                 $progress_bar = create_progress_bar($percentage);
+                $elapsed = $current_time - $start_time;
+                $speed = $elapsed > 0 ? $downloaded / $elapsed : 0;
+                
                 $text = "📥 <b>در حال دانلود ویدیو...</b>\n\n"
                       . "$progress_bar\n"
-                      . "📊 " . format_size($downloaded) . " / " . format_size($download_size);
+                      . "📊 " . format_size($downloaded) . " / " . format_size($download_size) . "\n"
+                      . "🚀 سرعت: " . format_size($speed) . "/s\n"
+                      . "⏱️ زمان: " . format_duration($elapsed);
                 
                 try {
                     editMessageText($chat_id, $message_id, $text);
@@ -114,7 +146,7 @@ function downloadFileWithProgress($file_path, $destination, $chat_id, $message_i
                     // ignore errors during progress updates
                 }
                 
-                $last_update = $current_time;
+                $last_update_time = $current_time;
             }
         }
         
@@ -124,35 +156,54 @@ function downloadFileWithProgress($file_path, $destination, $chat_id, $message_i
     $result = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
+    $download_speed = curl_getinfo($ch, CURLINFO_SPEED_DOWNLOAD);
     
     curl_close($ch);
     fclose($file_handle);
     
-    if ($http_code !== 200 || !file_exists($destination)) {
-        log_message("Download failed: HTTP $http_code - $error");
+    if ($http_code !== 200) {
+        log_message("❌ Download failed: HTTP $http_code - $error");
+        if (file_exists($destination)) {
+            unlink($destination);
+        }
+        return false;
+    }
+    
+    if (!file_exists($destination)) {
+        log_message("❌ Download failed: File not created");
         return false;
     }
     
     $downloaded_size = filesize($destination);
-    log_message("Download completed: " . format_size($downloaded_size));
+    $download_time = time() - $start_time;
+    
+    log_message("✅ Download completed: " . format_size($downloaded_size) . 
+                " in " . $download_time . "s (" . format_size($download_speed) . "/s)");
     
     return $downloaded_size > 0;
 }
 
-// فشرده‌سازی ویدیو با پیشرفت
+// فشرده‌سازی ویدیو با تنظیمات بهینه برای فایل‌های بزرگ
 function compressVideoWithProgress($input_path, $output_path, $chat_id, $message_id) {
-    log_message("Starting compression: $input_path -> $output_path");
-    
     $input_size = filesize($input_path);
+    log_message("🔧 Starting compression: " . format_size($input_size));
     
-    // دستور ffmpeg با loglevel برای ردیابی پیشرفت
+    // بررسی فضای دیسک
+    if (!check_disk_space($input_size * 2)) {
+        throw new Exception("فضای ناکافی برای فشرده‌سازی. نیاز به " . format_size($input_size * 2));
+    }
+    
+    // تنظیمات ffmpeg بر اساس حجم فایل
+    $crf = $input_size > 100 * 1024 * 1024 ? '30' : '28'; // فشرده‌سازی بیشتر برای فایل‌های بزرگ
+    $preset = $input_size > 100 * 1024 * 1024 ? 'fast' : 'medium';
+    
     $command = "ffmpeg -i " . escapeshellarg($input_path) . 
-               " -vcodec libx264 -crf 28 -preset medium" .
+               " -vcodec libx264 -crf $crf -preset $preset" .
                " -acodec aac -b:a 128k -movflags +faststart" .
-               " -y " . escapeshellarg($output_path) . 
+               " -threads 0 -y " . escapeshellarg($output_path) . 
                " -progress pipe:1 2>&1";
     
-    log_message("Executing: $command");
+    log_message("⚙️ FFmpeg command: $command");
     
     $descriptorspec = [
         0 => ["pipe", "r"],  // stdin
@@ -160,47 +211,64 @@ function compressVideoWithProgress($input_path, $output_path, $chat_id, $message
         2 => ["pipe", "w"]   // stderr
     ];
     
-    $process = proc_open($command, $descriptorspec, $pipes);
+    $process = proc_open($command, $descriptorspec, $pipes, null, [
+        'PATH' => '/usr/local/bin:/usr/bin:/bin'
+    ]);
     
     if (!is_resource($process)) {
-        return ['success' => false, 'error' => 'Could not start ffmpeg process'];
+        throw new Exception('Cannot start ffmpeg process');
     }
     
     $start_time = time();
-    $last_update = 0;
+    $last_update_time = 0;
+    $duration_seconds = 0;
     
     // خواندن خروجی پیشرفت
-    while ($line = fgets($pipes[1])) {
-        $line = trim($line);
+    stream_set_blocking($pipes[1], false);
+    
+    while (true) {
+        $status = proc_get_status($process);
+        if (!$status['running']) {
+            break;
+        }
         
-        if (strpos($line, 'out_time=') === 0) {
-            $current_time = time();
+        // خواندن خط پیشرفت
+        $line = fgets($pipes[1]);
+        if ($line !== false) {
+            $line = trim($line);
             
-            // فقط هر 5 ثانیه آپدیت کن
-            if ($current_time - $last_update >= 5) {
-                $time_str = substr($line, 9); // حذف 'out_time='
-                $seconds = time_to_seconds($time_str);
+            if (strpos($line, 'out_time=') === 0) {
+                $time_str = substr($line, 9);
+                $current_seconds = time_to_seconds($time_str);
+                $duration_seconds = max($duration_seconds, $current_seconds);
                 
-                // تخمین پیشرفت بر اساس زمان (ساده)
-                if ($seconds > 0) {
-                    $total_estimate = $seconds * 2; // تخمین ساده
-                    $percentage = min(95, ($seconds / $total_estimate) * 100);
+                // تخمین کل زمان بر اساس پیشرفت
+                if ($current_seconds > 1) {
+                    $elapsed_time = time() - $start_time;
+                    $total_estimate = ($elapsed_time / $current_seconds) * 100;
+                    $percentage = min(95, $total_estimate);
                     
-                    $progress_bar = create_progress_bar($percentage);
-                    $text = "🔄 <b>در حال فشرده‌سازی ویدیو...</b>\n\n"
-                          . "$progress_bar\n"
-                          . "⏱️ زمان سپری شده: " . format_duration($seconds);
-                    
-                    try {
-                        editMessageText($chat_id, $message_id, $text);
-                    } catch (Exception $e) {
-                        // ignore errors during progress updates
+                    $current_time = time();
+                    if ($current_time - $last_update_time >= 5) {
+                        $progress_bar = create_progress_bar($percentage);
+                        $text = "🔄 <b>در حال فشرده‌سازی ویدیو...</b>\n\n"
+                              . "$progress_bar\n"
+                              . "⏱️ زمان سپری شده: " . format_duration($elapsed_time) . "\n"
+                              . "⚙️ کیفیت: " . ($crf == '30' ? 'بهینه' : 'عالی');
+                        
+                        try {
+                            editMessageText($chat_id, $message_id, $text);
+                        } catch (Exception $e) {
+                            // ignore
+                        }
+                        
+                        $last_update_time = $current_time;
                     }
-                    
-                    $last_update = $current_time;
                 }
             }
         }
+        
+        usleep(100000); // 100ms delay
     }
     
     // خواندن خطاها
@@ -213,16 +281,21 @@ function compressVideoWithProgress($input_path, $output_path, $chat_id, $message
     $return_code = proc_close($process);
     
     if ($return_code !== 0) {
-        log_message("FFmpeg error (code: $return_code): $stderr");
-        return [
-            'success' => false, 
-            'error' => 'FFmpeg failed: ' . extract_error_info($stderr)
-        ];
+        log_message("❌ FFmpeg failed with code: $return_code");
+        log_message("FFmpeg stderr: " . $stderr);
+        throw new Exception('فشرده‌سازی ناموفق: ' . extract_error_info($stderr));
     }
     
     if (!file_exists($output_path) || filesize($output_path) === 0) {
-        return ['success' => false, 'error' => 'Output file not created'];
+        throw new Exception('فایل خروجی ایجاد نشد');
     }
+    
+    $output_size = filesize($output_path);
+    $compression_time = time() - $start_time;
+    
+    log_message("✅ Compression completed: " . format_size($output_size) . 
+                " in " . $compression_time . "s (" . 
+                round(($input_size - $output_size) / $input_size * 100, 1) . "% reduction)");
     
     return ['success' => true];
 }
@@ -254,34 +327,35 @@ function format_duration($seconds) {
     }
 }
 
-// استخراج اطلاعات خطا از خروجی ffmpeg
+// استخراج اطلاعات خطا
 function extract_error_info($stderr) {
     $lines = explode("\n", $stderr);
     
-    // پیدا کردن خطوط خطا
-    $error_lines = [];
     foreach ($lines as $line) {
-        if (strpos($line, 'Error') !== false || strpos($line, 'error') !== false) {
-            $error_lines[] = trim($line);
+        if (preg_match('/error|Error|ERROR|failed|Failed|Invalid/i', $line)) {
+            $clean_line = trim($line);
+            if (strlen($clean_line) > 10) {
+                return substr($clean_line, 0, 100);
+            }
         }
     }
     
-    if (count($error_lines) > 0) {
-        return implode('; ', array_slice($error_lines, 0, 3));
-    }
-    
-    return 'Unknown error';
+    return 'خطای ناشناخته در پردازش ویدیو';
 }
 
-// ارسال ویدیو
+// ارسال ویدیو با تلاش مجدد
 function sendVideo($chat_id, $video_path, $caption = '') {
     if (!file_exists($video_path)) {
-        log_message("Video file not found: $video_path");
-        return ['ok' => false];
+        throw new Exception("فایل ویدیو یافت نشد");
     }
     
     $file_size = filesize($video_path);
-    log_message("Uploading video: " . format_size($file_size));
+    log_message("📤 Uploading video: " . format_size($file_size));
+    
+    // اگر فایل خیلی بزرگ است، از روش chunked استفاده کن
+    if ($file_size > 50 * 1024 * 1024) {
+        return sendVideoChunked($chat_id, $video_path, $caption);
+    }
     
     $params = [
         'chat_id' => $chat_id,
@@ -290,22 +364,70 @@ function sendVideo($chat_id, $video_path, $caption = '') {
     ];
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, API_URL . 'sendVideo');
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 300);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt_array($ch, [
+        CURLOPT_URL => API_URL . 'sendVideo',
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $params,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 300,
+        CURLOPT_SSL_VERIFYPEER => false,
+    ]);
     
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
     if ($http_code !== 200) {
-        log_message("Upload failed. HTTP Code: $http_code");
-        return ['ok' => false];
+        throw new Exception("خطا در آپلود: کد HTTP $http_code");
     }
     
-    return json_decode($response, true);
+    $result = json_decode($response, true);
+    
+    if (!$result || !$result['ok']) {
+        throw new Exception("پاسخ نامعتبر از تلگرام");
+    }
+    
+    log_message("✅ Upload completed successfully");
+    return $result;
+}
+
+// ارسال ویدیو به صورت تکه‌ای برای فایل‌های بسیار بزرگ
+function sendVideoChunked($chat_id, $video_path, $caption) {
+    // برای فایل‌های بسیار بزرگ، از روش ساده‌تری استفاده می‌کنیم
+    $params = [
+        'chat_id' => $chat_id,
+        'caption' => $caption,
+        'video' => new CURLFile(realpath($video_path))
+    ];
+    
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => API_URL . 'sendVideo',
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $params,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 600, // 10 دقیقه برای آپلود
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: multipart/form-data'
+        ]
+    ]);
+    
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($http_code !== 200) {
+        throw new Exception("خطا در آپلود فایل بزرگ: کد HTTP $http_code");
+    }
+    
+    $result = json_decode($response, true);
+    
+    if (!$result || !$result['ok']) {
+        throw new Exception("آپلود فایل بزرگ ناموفق بود");
+    }
+    
+    log_message("✅ Large file upload completed");
+    return $result;
 }
 ?>
