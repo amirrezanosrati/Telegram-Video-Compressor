@@ -18,14 +18,34 @@ define('START_TIME', time());
 function log_message($message) {
     $timestamp = date('Y-m-d H:i:s');
     echo "[$timestamp] $message\n";
-    
-    // همچنین در فایل لاگ هم ذخیره شود
     file_put_contents(TMP_DIR . 'bot.log', "[$timestamp] $message\n", FILE_APPEND);
 }
 
 // بررسی زمان اجرا
 function should_continue_running() {
     $elapsed = time() - START_TIME;
-    return $elapsed < (MAX_RUNTIME * 60); // تبدیل به ثانیه
+    return $elapsed < (MAX_RUNTIME * 60);
+}
+
+// تابع format حجم
+function format_size($bytes) {
+    if ($bytes >= 1073741824) {
+        return number_format($bytes / 1073741824, 2) . ' GB';
+    } elseif ($bytes >= 1048576) {
+        return number_format($bytes / 1048576, 1) . ' MB';
+    } elseif ($bytes >= 1024) {
+        return number_format($bytes / 1024, 1) . ' KB';
+    } else {
+        return $bytes . ' B';
+    }
+}
+
+// ایجاد نوار پیشرفت
+function create_progress_bar($percentage, $length = 20) {
+    $filled = round(($percentage / 100) * $length);
+    $empty = $length - $filled;
+    
+    $bar = '█' . str_repeat('█', $filled) . str_repeat('▒', $empty);
+    return $bar . ' ' . round($percentage, 1) . '%';
 }
 ?>
