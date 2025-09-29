@@ -103,7 +103,7 @@ function downloadFileWithProgress($file_path, $destination, $chat_id, $message_i
         CURLOPT_NOPROGRESS => false,
     ]);
     
-    // تابع callback برای پیشرفت
+    // تابع callback برای پیشرفت دانلود
     curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function($resource, $download_size, $downloaded, $upload_size, $uploaded) 
         use ($chat_id, $message_id, $file_size, &$last_update_time, $start_time) {
         
@@ -163,18 +163,14 @@ function downloadFileWithProgress($file_path, $destination, $chat_id, $message_i
     return true;
 }
 
-// آپلود ویدیو با کیفیت پایین (تلگرام خودش فشرده می‌کند)
-function uploadVideoWithReducedQuality($chat_id, $video_path, $original_size, $file_name) {
+// آپلود ویدیو با نوار پیشرفت
+function uploadVideoWithProgress($chat_id, $message_id, $video_path, $original_size, $file_name) {
     if (!file_exists($video_path)) {
         throw new Exception("فایل ویدیو یافت نشد");
     }
     
     $file_size = filesize($video_path);
-    log_message("📤 Uploading video for compression: " . format_size($file_size));
-    
-    // محاسبه کاهش حجم تخمینی (تلگرام معمولاً 60-80% کاهش می‌دهد)
-    $estimated_reduction = 70; // 70% کاهش حجم توسط تلگرام
-    $estimated_final_size = $file_size * (1 - $estimated_reduction/100);
+    log_message("📤 Starting upload: " . format_size($file_size));
     
     $caption = "🎯 ویدیو با کیفیت بهینه‌شده\n" .
                "📊 حجم اصلی: " . format_size($original_size) . "\n" .
@@ -189,10 +185,6 @@ function uploadVideoWithReducedQuality($chat_id, $video_path, $original_size, $f
         'supports_streaming' => true
     ];
     
-    $start_time = time();
-    $last_update_time = 0;
-    $uploaded_bytes = 0;
-    
     $ch = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_URL => API_URL . 'sendVideo',
@@ -204,35 +196,54 @@ function uploadVideoWithReducedQuality($chat_id, $video_path, $original_size, $f
         CURLOPT_NOPROGRESS => false,
     ]);
     
+    $start_time = time();
+    $last_update_time = 0;
+    
     // تابع callback برای پیشرفت آپلود
     curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function($resource, $download_size, $downloaded, $upload_size, $uploaded) 
-        use ($chat_id, $message_id, $file_size, &$last_update_time, $start_time, &$uploaded_bytes) {
+        use ($chat_id, $message_id, $file_size, &$last_update_time, $start_time) {
         
         if ($upload_size > 0 && $uploaded > 0) {
             $percentage = min(100, ($uploaded / $upload_size) * 100);
             $current_time = time();
-            $uploaded_bytes = $uploaded;
             
-            if ($current_time - $last_update_time >= 3 || $percentage >= 100) {
+            // فقط هر 3 ثانیه آپدیت کن یا وقتی نزدیک به پایان است
+            if ($current_time - $last_update_time >= 3 || $percentage >= 95) {
                 $progress_bar = create_progress_bar($percentage);
                 $elapsed = $current_time - $start_time;
                 $speed = $elapsed > 0 ? $uploaded / $elapsed : 0;
+                
                 $remaining_time = $speed > 0 ? ($upload_size - $uploaded) / $speed : 0;
                 
                 $text = "📤 <b>در حال آپلود به تلگرام...</b>\n\n"
                       . "$progress_bar\n"
                       . "📊 " . format_size($uploaded) . " / " . format_size($upload_size) . "\n"
                       . "🚀 سرعت: " . format_size($speed) . "/s\n"
-                      . "⏱️ زمان باقی: " . format_duration($remaining_time) . "\n"
+                      . "⏱️ زمان باقی: " . format_duration($remaining_time) . "\n\n"
                       . "💡 تلگرام خودش ویدیو را فشرده می‌کند";
                 
                 try {
                     editMessageText($chat_id, $message_id, $text);
                 } catch (Exception $e) {
-                    // ignore errors
+                    // ignore errors during progress updates
                 }
                 
                 $last_update_time = $current_time;
+                
+                // وقتی آپلود کامل شد، یک پیام نهایی بفرست
+                if ($percentage >= 100) {
+                    $final_text = "✅ <b>آپلود کامل شد!</b>\n\n"
+                                . "📊 حجم آپلود شده: " . format_size($upload_size) . "\n"
+                                . "⏱️ زمان کل: " . format_duration($elapsed) . "\n"
+                                . "🚀 سرعت متوسط: " . format_size($speed) . "/s\n\n"
+                                . "🔄 در حال پردازش نهایی توسط تلگرام...";
+                    
+                    try {
+                        editMessageText($chat_id, $message_id, $final_text);
+                    } catch (Exception $e) {
+                        // ignore
+                    }
+                }
             }
         }
         
@@ -264,8 +275,8 @@ function uploadVideoWithReducedQuality($chat_id, $video_path, $original_size, $f
     return $result;
 }
 
-// ارسال ویدیو نهایی
-function sendFinalVideo($chat_id, $video_path, $original_size, $file_name) {
-    return uploadVideoWithReducedQuality($chat_id, $video_path, $original_size, $file_name);
+// ارسال ویدیو نهایی با پیشرفت
+function sendFinalVideo($chat_id, $message_id, $video_path, $original_size, $file_name) {
+    return uploadVideoWithProgress($chat_id, $message_id, $video_path, $original_size, $file_name);
 }
 ?>
