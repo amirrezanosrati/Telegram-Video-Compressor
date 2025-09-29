@@ -5,18 +5,11 @@ define('API_URL', 'https://api.telegram.org/bot' . BOT_TOKEN . '/');
 define('MAX_FILE_SIZE', 2 * 1024 * 1024 * 1024); // 2GB
 define('MAX_RUNTIME', getenv('MAX_RUNTIME') ?: 360); // 6 ساعت
 
-// دایرکتوری‌های موقت - استفاده از /tmp مستقیم
+// دایرکتوری‌های موقت
 define('TMP_DIR', '/tmp/telegram_bot/');
 if (!file_exists(TMP_DIR)) {
     mkdir(TMP_DIR, 0755, true);
 }
-
-// تنظیمات PHP برای فایل‌های بزرگ
-ini_set('memory_limit', '1024M');
-ini_set('max_execution_time', 0);
-ini_set('upload_max_filesize', '2048M');
-ini_set('post_max_size', '2048M');
-ini_set('max_input_time', 0);
 
 // زمان شروع اجرا
 define('START_TIME', time());
@@ -25,7 +18,6 @@ define('START_TIME', time());
 function log_message($message) {
     $timestamp = date('Y-m-d H:i:s');
     echo "[$timestamp] $message\n";
-    file_put_contents(TMP_DIR . 'bot.log', "[$timestamp] $message\n", FILE_APPEND);
 }
 
 // بررسی زمان اجرا
@@ -56,9 +48,16 @@ function create_progress_bar($percentage, $length = 15) {
     return $bar . ' ' . round($percentage, 1) . '%';
 }
 
-// بررسی فضای دیسک
-function check_disk_space($required_bytes) {
-    $free_space = disk_free_space('/tmp');
-    return $free_space >= ($required_bytes * 2); // نیاز به 2 برابر فضای آزاد
+// فرمت مدت زمان
+function format_duration($seconds) {
+    $hours = floor($seconds / 3600);
+    $minutes = floor(($seconds % 3600) / 60);
+    $seconds = $seconds % 60;
+    
+    if ($hours > 0) {
+        return sprintf("%d:%02d:%02d", $hours, $minutes, $seconds);
+    } else {
+        return sprintf("%02d:%02d", $minutes, $seconds);
+    }
 }
 ?>
