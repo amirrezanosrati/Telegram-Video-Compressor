@@ -1,5 +1,5 @@
 <?php
-require_once 'vendor/autoload.php';
+// بارگذاری فایل‌های مورد نیاز
 require_once 'config.php';
 require_once 'functions.php';
 
@@ -7,17 +7,18 @@ log_message("🤖 Starting PHP Telegram Bot (Polling Mode)");
 
 // آخرین update_id
 $last_update_id = 0;
+$processed_updates = 0;
 
 // حلقه اصلی ربات
 while (should_continue_running()) {
     try {
-        log_message("🔍 Checking for updates... (offset: $last_update_id)");
+        log_message("🔍 Checking for updates... (offset: " . ($last_update_id + 1) . ")");
         
         // دریافت updates
         $updates = getUpdates($last_update_id + 1);
         
         if (!$updates || !$updates['ok']) {
-            log_message("❌ Failed to get updates");
+            log_message("❌ Failed to get updates or no updates available");
             sleep(5);
             continue;
         }
@@ -25,11 +26,14 @@ while (should_continue_running()) {
         // پردازش هر update
         foreach ($updates['result'] as $update) {
             $last_update_id = max($last_update_id, $update['update_id']);
+            $processed_updates++;
             
             if (isset($update['message'])) {
                 processMessage($update['message']);
             }
         }
+        
+        log_message("✅ Processed " . count($updates['result']) . " updates. Total: $processed_updates");
         
         // اگر update جدیدی نبود، کمی صبر کن
         if (empty($updates['result'])) {
@@ -42,11 +46,10 @@ while (should_continue_running()) {
     }
 }
 
-log_message("🕒 Maximum runtime reached. Stopping bot.");
+log_message("🕒 Maximum runtime reached. Stopping bot after processing $processed_updates updates.");
 
 function processMessage($message) {
     $chat_id = $message['chat']['id'];
-    $message_id = $message['message_id'];
     
     try {
         // دستور start
@@ -102,7 +105,7 @@ function processMessage($message) {
         }
         
         // شروع پردازش
-        processVideo($video, $chat_id, $message_id, $file_name);
+        processVideo($video, $chat_id, $file_name);
         
     } catch (Exception $e) {
         log_message("Error processing message: " . $e->getMessage());
@@ -110,7 +113,7 @@ function processMessage($message) {
     }
 }
 
-function processVideo($video, $chat_id, $message_id, $file_name) {
+function processVideo($video, $chat_id, $file_name) {
     $input_path = '';
     $output_path = '';
     
