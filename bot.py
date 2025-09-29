@@ -161,6 +161,37 @@ async def compress_video(input_path: str, output_path: str) -> Tuple[bool, str]:
         logger.error(f"Error in compress_video: {e}")
         return False, f"خطای سیستمی: {str(e)}"
 
+def detect_video_type(update: Update):
+    """تشخیص نوع ویدیو دریافتی"""
+    message = update.message
+    
+    # بررسی ویدیو مستقیم
+    if message.video:
+        return "video", message.video, message.video.file_size, getattr(message.video, 'file_name', 'video.mp4')
+    
+    # بررسی document ویدیویی
+    if message.document:
+        document = message.document
+        mime_type = getattr(document, 'mime_type', '')
+        file_name = getattr(document, 'file_name', 'video')
+        
+        # لیست MIME type های قابل قبول
+        video_mime_types = ['video/mp4', 'video/avi', 'video/mkv', 'video/mov', 'video/wmv', 
+                          'video/flv', 'video/webm', 'video/3gp', 'video/mpeg']
+        
+        # بررسی بر اساس MIME type
+        if mime_type and (mime_type.startswith('video/') or mime_type in video_mime_types):
+            return "document", document, document.file_size, file_name
+        
+        # بررسی بر اساس پسوند فایل
+        file_ext = os.path.splitext(file_name)[1].lower()
+        video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.3gp', '.mpeg', '.mpg', '.m4v']
+        
+        if file_ext in video_extensions:
+            return "document", document, document.file_size, file_name
+    
+    return None, None, 0, ""
+
 async def handle_video(update: Update, context: CallbackContext):
     """Handler برای مدیریت ویدیوهای دریافتی"""
     user = update.message.from_user
@@ -171,62 +202,20 @@ async def handle_video(update: Update, context: CallbackContext):
     output_path = None
     
     try:
-        # لاگ کامل پیام برای دیباگ
-        logger.info(f"Message type: {update.message.content_type}")
+        # تشخیص نوع ویدیو
+        video_type, video, file_size, file_name = detect_video_type(update)
         
-        # بررسی انواع مختلف ویدیو
-        video = None
-        file_size = 0
-        file_name = "video"
-        
-        if update.message.video:
-            video = update.message.video
-            file_size = video.file_size
-            file_name = getattr(video, 'file_name', 'video.mp4')
-            logger.info(f"Detected as video message. Size: {file_size}, File: {file_name}")
-            
-        elif update.message.document:
-            # بررسی اینکه آیا document یک ویدیو است
-            document = update.message.document
-            mime_type = getattr(document, 'mime_type', '')
-            file_name = getattr(document, 'file_name', 'video')
-            
-            logger.info(f"Detected as document. MIME: {mime_type}, File: {file_name}, Size: {document.file_size}")
-            
-            # لیست MIME type های قابل قبول
-            video_mime_types = ['video/mp4', 'video/avi', 'video/mkv', 'video/mov', 'video/wmv', 
-                              'video/flv', 'video/webm', 'video/3gp', 'video/mpeg']
-            
-            if mime_type and (mime_type.startswith('video/') or mime_type in video_mime_types):
-                video = document
-                file_size = document.file_size
-                logger.info(f"Document is a video. Size: {file_size}")
-            else:
-                # حتی اگر MIME type ناشناخته باشد، بر اساس پسوند فایل بررسی کنیم
-                file_ext = os.path.splitext(file_name)[1].lower()
-                video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.3gp', '.mpeg', '.mpg']
-                
-                if file_ext in video_extensions:
-                    video = document
-                    file_size = document.file_size
-                    logger.info(f"Document has video extension. Treating as video. Size: {file_size}")
-                else:
-                    await update.message.reply_text(
-                        "❌ لطفاً یک فایل ویدیویی ارسال کنید.\n"
-                        f"فرمت دریافتی: {mime_type or 'نامشخص'}\n"
-                        f"پسوند فایل: {file_ext or 'نامشخص'}"
-                    )
-                    return
-        else:
+        if not video:
             await update.message.reply_text(
-                "❌ لطفاً یک ویدیو ارسال کنید.\n"
-                "می‌توانید ویدیو را به صورت مستقیم یا از طریق بخش Document ارسال کنید."
+                "❌ لطفاً یک فایل ویدیویی ارسال کنید.\n\n"
+                "✅ روش‌های ارسال:\n"
+                "• ارسال مستقیم ویدیو\n"
+                "• ارسال از طریق بخش Document\n\n"
+                "📹 فرمت‌های پشتیبانی: MP4, AVI, MKV, MOV, WMV, FLV, WebM, 3GP"
             )
             return
         
-        if not video:
-            await update.message.reply_text("❌ هیچ ویدیویی در پیام شناسایی نشد.")
-            return
+        logger.info(f"Detected {video_type}: {file_name}, Size: {file_size} bytes")
         
         # بررسی محدودیت حجم (تا 2GB)
         MAX_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
@@ -249,7 +238,7 @@ async def handle_video(update: Update, context: CallbackContext):
             return
         
         # ارسال پیام شروع
-        size_text = f"{file_size/1024/1024:.1f}MB" if file_size < 1024*1024*1024 else f"{file_size/1024/1024/1024:.1f}GB"
+        size_text = f"{file_size/1024/1024:.1f}MB" if file_size < 1024*1024*1024 else f"{file_size/1024/1024/1024:.2f}GB"
         start_msg = await update.message.reply_text(
             f"🎬 <b>شروع پردازش ویدیو</b>\n\n"
             f"📊 حجم ویدیو: <b>{size_text}</b>\n"
@@ -467,8 +456,7 @@ async def handle_video(update: Update, context: CallbackContext):
                 "لطفاً:\n"
                 "• ویدیوی کوچکتری ارسال کنید\n"
                 "• اتصال اینترنت را بررسی کنید\n"
-                "• چند دقیقه دیگر تلاش کنید\n\n"
-                f"خطا: {str(e)[:100]}...",
+                "• چند دقیقه دیگر تلاش کنید",
                 parse_mode=ParseMode.HTML
             )
         except:
@@ -530,8 +518,9 @@ def main():
     # ایجاد برنامه با تنظیمات بهتر
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # اضافه کردن handlerها
-    application.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video))
+    # اضافه کردن handlerها - فقط ویدیو و documentهای ویدیویی
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.Document.VIDEO, handle_video))
     application.add_handler(MessageHandler(filters.COMMAND & filters.Regex('start'), start_command))
     application.add_handler(MessageHandler(filters.COMMAND & filters.Regex('help'), help_command))
     
