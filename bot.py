@@ -9,6 +9,7 @@ import tempfile
 import time
 from typing import Tuple
 import aiofiles
+import math
 
 # تنظیمات لاگ
 logging.basicConfig(
@@ -67,7 +68,7 @@ async def download_with_progress(file, file_path, progress_callback=None):
     
     try:
         async with aiofiles.open(file_path, 'wb') as f:
-            async for chunk in file.iter_bytes(chunk_size=65536):  # 64KB chunks
+            async for chunk in file.iter_bytes(chunk_size=131072):  # 128KB chunks برای سرعت بیشتر
                 if chunk:
                     await f.write(chunk)
                     downloaded += len(chunk)
@@ -96,24 +97,36 @@ async def compress_video(input_path: str, output_path: str) -> Tuple[bool, str]:
         if input_size == 0:
             return False, "فایل ورودی خالی است"
         
-        logger.info(f"Starting compression. Input size: {input_size} bytes")
+        logger.info(f"Starting compression. Input size: {input_size/1024/1024:.2f} MB")
+        
+        # تنظیمات بهینه برای فایل‌های بزرگ
+        crf_value = "28"  # فشرده‌سازی بیشتر برای فایل‌های بزرگ
+        preset_value = "medium"
+        
+        if input_size > 500 * 1024 * 1024:  # بیش از 500MB
+            crf_value = "30"
+            preset_value = "fast"
         
         # دستور FFmpeg برای فشرده‌سازی ویدیو
         command = [
             'ffmpeg',
             '-i', input_path,
             '-vcodec', 'libx264',
-            '-crf', '23',  # کاهش CRF برای کیفیت بهتر
-            '-preset', 'medium',
+            '-crf', crf_value,
+            '-preset', preset_value,
             '-acodec', 'aac',
             '-b:a', '128k',
             '-movflags', '+faststart',
             '-y',
-            '-loglevel', 'info',  # اضافه کردن loglevel برای دیباگ
+            '-loglevel', 'info',
+            '-threads', '0',  # استفاده از تمام cores
             output_path
         ]
         
-        # اجرای FFmpeg با timeout
+        # اجرای FFmpeg با timeout بیشتر برای فایل‌های بزرگ
+        timeout_seconds = max(600, int(input_size / (1024 * 1024) * 2))  # 2 ثانیه به ازای هر مگابایت
+        logger.info(f"FFmpeg timeout set to {timeout_seconds} seconds")
+        
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -121,7 +134,7 @@ async def compress_video(input_path: str, output_path: str) -> Tuple[bool, str]:
         )
         
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)  # 5 minutes timeout
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
             
             if process.returncode != 0:
                 error_msg = stderr.decode('utf-8', errors='ignore')
@@ -136,7 +149,7 @@ async def compress_video(input_path: str, output_path: str) -> Tuple[bool, str]:
             if output_size == 0:
                 return False, "فایل خروجی خالی است"
             
-            logger.info(f"Compression successful. Output size: {output_size} bytes")
+            logger.info(f"Compression successful. Output size: {output_size/1024/1024:.2f} MB")
             return True, "فشرده‌سازی با موفقیت انجام شد"
             
         except asyncio.TimeoutError:
@@ -159,37 +172,51 @@ async def handle_video(update: Update, context: CallbackContext):
     
     try:
         # لاگ کامل پیام برای دیباگ
-        logger.info(f"Message content: {update.message}")
-        logger.info(f"Video attribute: {update.message.video}")
-        logger.info(f"Document attribute: {update.message.document}")
+        logger.info(f"Message type: {update.message.content_type}")
         
         # بررسی انواع مختلف ویدیو
         video = None
         file_size = 0
+        file_name = "video"
         
         if update.message.video:
             video = update.message.video
             file_size = video.file_size
-            logger.info(f"Detected as video message. Size: {file_size}")
+            file_name = getattr(video, 'file_name', 'video.mp4')
+            logger.info(f"Detected as video message. Size: {file_size}, File: {file_name}")
             
         elif update.message.document:
             # بررسی اینکه آیا document یک ویدیو است
             document = update.message.document
             mime_type = getattr(document, 'mime_type', '')
-            file_name = getattr(document, 'file_name', '')
+            file_name = getattr(document, 'file_name', 'video')
             
-            logger.info(f"Detected as document. MIME: {mime_type}, File: {file_name}")
+            logger.info(f"Detected as document. MIME: {mime_type}, File: {file_name}, Size: {document.file_size}")
             
-            if mime_type and mime_type.startswith('video/'):
+            # لیست MIME type های قابل قبول
+            video_mime_types = ['video/mp4', 'video/avi', 'video/mkv', 'video/mov', 'video/wmv', 
+                              'video/flv', 'video/webm', 'video/3gp', 'video/mpeg']
+            
+            if mime_type and (mime_type.startswith('video/') or mime_type in video_mime_types):
                 video = document
                 file_size = document.file_size
                 logger.info(f"Document is a video. Size: {file_size}")
             else:
-                await update.message.reply_text(
-                    "❌ لطفاً یک فایل ویدیویی ارسال کنید.\n"
-                    f"فرمت دریافتی: {mime_type or 'نامشخص'}"
-                )
-                return
+                # حتی اگر MIME type ناشناخته باشد، بر اساس پسوند فایل بررسی کنیم
+                file_ext = os.path.splitext(file_name)[1].lower()
+                video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.3gp', '.mpeg', '.mpg']
+                
+                if file_ext in video_extensions:
+                    video = document
+                    file_size = document.file_size
+                    logger.info(f"Document has video extension. Treating as video. Size: {file_size}")
+                else:
+                    await update.message.reply_text(
+                        "❌ لطفاً یک فایل ویدیویی ارسال کنید.\n"
+                        f"فرمت دریافتی: {mime_type or 'نامشخص'}\n"
+                        f"پسوند فایل: {file_ext or 'نامشخص'}"
+                    )
+                    return
         else:
             await update.message.reply_text(
                 "❌ لطفاً یک ویدیو ارسال کنید.\n"
@@ -201,15 +228,15 @@ async def handle_video(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ هیچ ویدیویی در پیام شناسایی نشد.")
             return
         
-        # بررسی محدودیت حجم
-        MAX_SIZE = 500 * 1024 * 1024  # 500MB
+        # بررسی محدودیت حجم (تا 2GB)
+        MAX_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
         MIN_SIZE = 10 * 1024  # 10KB
         
         if file_size > MAX_SIZE:
             await update.message.reply_text(
                 f"❌ حجم ویدیو بسیار بزرگ است.\n"
-                f"حداکثر حجم مجاز: {MAX_SIZE/1024/1024}MB\n"
-                f"حجم ویدیوی شما: {file_size/1024/1024:.1f}MB"
+                f"حداکثر حجم مجاز: {MAX_SIZE/1024/1024/1024:.1f}GB\n"
+                f"حجم ویدیوی شما: {file_size/1024/1024/1024:.1f}GB"
             )
             return
         
@@ -222,27 +249,54 @@ async def handle_video(update: Update, context: CallbackContext):
             return
         
         # ارسال پیام شروع
+        size_text = f"{file_size/1024/1024:.1f}MB" if file_size < 1024*1024*1024 else f"{file_size/1024/1024/1024:.1f}GB"
         start_msg = await update.message.reply_text(
-            f"🎬 شروع پردازش ویدیو...\n"
-            f"📊 حجم ویدیو: {file_size/1024/1024:.1f}MB",
+            f"🎬 <b>شروع پردازش ویدیو</b>\n\n"
+            f"📊 حجم ویدیو: <b>{size_text}</b>\n"
+            f"📁 نام فایل: <b>{file_name}</b>\n\n"
+            f"⏳ لطفاً منتظر بمانید...",
             parse_mode=ParseMode.HTML
         )
         
-        # دریافت فایل ویدیو
-        try:
-            logger.info("Getting file object...")
-            video_file = await video.get_file()
-            logger.info(f"File object received. File ID: {video_file.file_id}, Size: {video_file.file_size}")
-            
-            # بررسی consistency سایز فایل
-            if video_file.file_size != file_size:
-                logger.warning(f"Size mismatch: message={file_size}, file_object={video_file.file_size}")
+        # دریافت فایل ویدیو با تلاش بیشتر
+        max_retries = 3
+        video_file = None
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempt {attempt + 1} to get file object...")
+                video_file = await video.get_file()
                 
-        except Exception as e:
-            logger.error(f"Error getting file object: {e}", exc_info=True)
+                # بررسی اطلاعات فایل
+                if not video_file:
+                    raise Exception("File object is None")
+                
+                logger.info(f"File object received. File ID: {video_file.file_id}, Size: {video_file.file_size}")
+                
+                # اگر سایزها متفاوت باشند، از سایز فایل object استفاده می‌کنیم
+                if video_file.file_size and video_file.file_size > 0:
+                    if video_file.file_size != file_size:
+                        logger.warning(f"Size mismatch: message={file_size}, file_object={video_file.file_size}. Using file_object size.")
+                        file_size = video_file.file_size
+                    break
+                else:
+                    raise Exception("File size is zero or None")
+                    
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # صبر 2 ثانیه قبل از تلاش مجدد
+                else:
+                    raise e
+        
+        if not video_file:
             await start_msg.edit_text(
-                "❌ خطا در دریافت اطلاعات ویدیو از تلگرام\n"
-                "لطفاً چند دقیقه دیگر تلاش کنید."
+                "❌ <b>خطا در دریافت اطلاعات ویدیو</b>\n\n"
+                "لطفاً:\n"
+                "• اتصال اینترنت خود را بررسی کنید\n"
+                "• ویدیوی کوچکتری ارسال کنید\n"
+                "• چند دقیقه دیگر تلاش کنید",
+                parse_mode=ParseMode.HTML
             )
             return
         
@@ -270,10 +324,16 @@ async def handle_video(update: Update, context: CallbackContext):
             speed = progress_tracker.format_speed(downloaded, elapsed)
             time_remaining = progress_tracker.format_time_remaining(downloaded, total, elapsed)
             
+            # فرمت حجم بر اساس اندازه
+            if total < 1024*1024*1024:  # کمتر از 1GB
+                size_text = f"{downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB"
+            else:
+                size_text = f"{downloaded/1024/1024/1024:.2f}GB / {total/1024/1024/1024:.2f}GB"
+            
             text = (
                 f"📥 <b>در حال دانلود ویدیو...</b>\n\n"
                 f"{progress_bar}\n"
-                f"📊 حجم: {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB\n"
+                f"📊 حجم: {size_text}\n"
                 f"🚀 سرعت: {speed}\n"
                 f"⏱️ زمان باقی‌مانده: {time_remaining}"
             )
@@ -304,7 +364,7 @@ async def handle_video(update: Update, context: CallbackContext):
             return
         
         downloaded_size = os.path.getsize(input_path)
-        logger.info(f"Download completed. File size: {downloaded_size} bytes")
+        logger.info(f"Download completed. File size: {downloaded_size/1024/1024:.2f} MB")
         
         if downloaded_size == 0:
             await start_msg.edit_text("❌ فایل دانلود شده خالی است")
@@ -317,7 +377,8 @@ async def handle_video(update: Update, context: CallbackContext):
         # پیام فشرده‌سازی
         compress_msg = await start_msg.edit_text(
             "🔄 <b>در حال فشرده‌سازی ویدیو...</b>\n\n"
-            "این مرحله ممکن است چند دقیقه طول بکشد...",
+            "این مرحله برای فایل‌های بزرگ ممکن است چند دقیقه طول بکشد...\n"
+            "⏳ لطفاً شکیبا باشید...",
             parse_mode=ParseMode.HTML
         )
         
@@ -346,11 +407,14 @@ async def handle_video(update: Update, context: CallbackContext):
         reduction = ((original_size - compressed_size) / original_size) * 100
         
         # نمایش اطلاعات فشرده‌سازی
+        original_size_text = f"{original_size/1024/1024:.1f}MB" if original_size < 1024*1024*1024 else f"{original_size/1024/1024/1024:.2f}GB"
+        compressed_size_text = f"{compressed_size/1024/1024:.1f}MB" if compressed_size < 1024*1024*1024 else f"{compressed_size/1024/1024/1024:.2f}GB"
+        
         compress_info = await compress_msg.edit_text(
             f"✅ <b>فشرده‌سازی تکمیل شد!</b>\n\n"
             f"📊 کاهش حجم: <b>{reduction:.1f}%</b>\n"
-            f"📁 حجم اصلی: <b>{original_size/1024/1024:.1f}MB</b>\n"
-            f"📁 حجم جدید: <b>{compressed_size/1024/1024:.1f}MB</b>\n\n"
+            f"📁 حجم اصلی: <b>{original_size_text}</b>\n"
+            f"📁 حجم جدید: <b>{compressed_size_text}</b>\n\n"
             f"📤 در حال آپلود ویدیو فشرده شده...",
             parse_mode=ParseMode.HTML
         )
@@ -364,14 +428,15 @@ async def handle_video(update: Update, context: CallbackContext):
                     caption=(
                         f"✅ ویدیو فشرده شده\n"
                         f"📊 کاهش حجم: {reduction:.1f}%\n"
-                        f"📁 حجم اصلی: {original_size/1024/1024:.1f}MB\n"
-                        f"📁 حجم جدید: {compressed_size/1024/1024:.1f}MB"
+                        f"📁 حجم اصلی: {original_size_text}\n"
+                        f"📁 حجم جدید: {compressed_size_text}\n"
+                        f"💾 صرفه‌جویی: {(original_size - compressed_size)/1024/1024:.1f}MB"
                     ),
-                    filename="compressed_video.mp4",
-                    read_timeout=120,
-                    write_timeout=120,
-                    connect_timeout=120,
-                    pool_timeout=120
+                    filename=f"compressed_{file_name}",
+                    read_timeout=300,
+                    write_timeout=300,
+                    connect_timeout=300,
+                    pool_timeout=300
                 )
             
             # پیام تکمیل
@@ -379,7 +444,8 @@ async def handle_video(update: Update, context: CallbackContext):
                 f"🎉 <b>پردازش کامل شد!</b>\n\n"
                 f"✅ ویدیو با موفقیت فشرده و آپلود شد\n"
                 f"📊 کاهش حجم: <b>{reduction:.1f}%</b>\n"
-                f"💾 صرفه‌جویی در فضای ذخیره‌سازی: <b>{(original_size - compressed_size)/1024/1024:.1f}MB</b>"
+                f"💾 صرفه‌جویی در فضای ذخیره‌سازی: <b>{(original_size - compressed_size)/1024/1024:.1f}MB</b>\n\n"
+                f"✨ برای فشرده‌سازی ویدیوی دیگر، همین حالا ارسال کنید!"
             )
             
             await compress_info.edit_text(success_msg, parse_mode=ParseMode.HTML)
@@ -387,14 +453,22 @@ async def handle_video(update: Update, context: CallbackContext):
             
         except Exception as upload_error:
             logger.error(f"Upload error: {upload_error}", exc_info=True)
-            await compress_info.edit_text("❌ خطا در آپلود ویدیو فشرده شده")
+            await compress_info.edit_text(
+                "❌ خطا در آپلود ویدیو فشرده شده\n\n"
+                "ویدیو فشرده شده با موفقیت ایجاد شد اما آپلود نشد.\n"
+                "لطفاً دوباره تلاش کنید."
+            )
     
     except Exception as e:
         logger.error(f"Unexpected error in handle_video: {e}", exc_info=True)
         try:
             await update.message.reply_text(
                 "❌ <b>خطای غیرمنتظره در پردازش ویدیو</b>\n\n"
-                "لطفاً دوباره تلاش کنید یا یک ویدیوی معتبر ارسال کنید.",
+                "لطفاً:\n"
+                "• ویدیوی کوچکتری ارسال کنید\n"
+                "• اتصال اینترنت را بررسی کنید\n"
+                "• چند دقیقه دیگر تلاش کنید\n\n"
+                f"خطا: {str(e)[:100]}...",
                 parse_mode=ParseMode.HTML
             )
         except:
@@ -421,9 +495,9 @@ async def start_command(update: Update, context: CallbackContext):
         "• به صورت مستقیم (Video)\n" 
         "• یا از طریق Document (فایل)\n\n"
         "⚠️ <i>محدودیت‌ها:</i>\n"
-        "• حداکثر حجم: 500MB\n"
+        "• حداکثر حجم: <b>2GB</b>\n"
         "• حداقل حجم: 10KB\n"
-        "• زمان پردازش: 1-5 دقیقه\n\n"
+        "• زمان پردازش: 1-10 دقیقه\n\n"
         "🎬 <b>همین حالا یک ویدیو ارسال کنید!</b>",
         parse_mode=ParseMode.HTML
     )
@@ -432,14 +506,14 @@ async def help_command(update: Update, context: CallbackContext):
     """دستور help"""
     await update.message.reply_text(
         "📖 <b>راهنما</b>\n\n"
-        "1. یک ویدیو ارسال کنید\n"
+        "1. یک ویدیو ارسال کنید (تا 2GB)\n"
         "2. منتظر بمانید تا دانلود شود\n" 
         "3. ویدیو فشرده می‌شود\n"
         "4. ویدیو فشرده شده برای شما ارسال می‌شود\n\n"
         "🔧 <i>اگر مشکل دارید:</i>\n"
-        "• ویدیوی کوچکتری امتحان کنید\n"
-        "• اتصال اینترنت را بررسی کنید\n"
-        "• چند دقیقه دیگر تلاش کنید",
+        "• از ویدیوهای با حجم کمتر شروع کنید\n"
+        "• اتصال اینترنت پایدار داشته باشید\n"
+        "• برای فایل‌های بزرگ چند دقیقه منتظر بمانید",
         parse_mode=ParseMode.HTML
     )
 
@@ -453,11 +527,11 @@ def main():
         logger.error("BOT_TOKEN environment variable is not set!")
         return
     
-    # ایجاد برنامه
+    # ایجاد برنامه با تنظیمات بهتر
     application = Application.builder().token(BOT_TOKEN).build()
     
     # اضافه کردن handlerها
-    application.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video))
     application.add_handler(MessageHandler(filters.COMMAND & filters.Regex('start'), start_command))
     application.add_handler(MessageHandler(filters.COMMAND & filters.Regex('help'), help_command))
     
@@ -465,7 +539,7 @@ def main():
     application.add_error_handler(error_handler)
     
     # شروع ربات
-    logger.info("Bot is starting...")
+    logger.info("Bot is starting with 2GB support...")
     application.run_polling()
 
 if __name__ == '__main__':
