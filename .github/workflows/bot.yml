@@ -4,8 +4,7 @@ on:
   push:
     branches: [ main ]
   schedule:
-    # اجرای هر 5 دقیقه به مدت 6 ساعت
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'  # هر 5 دقیقه
   workflow_dispatch:
 
 jobs:
@@ -28,16 +27,34 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        sudo apt-get install -y wget curl
+        sudo apt-get install -y pv  # برای نمایش پیشرفت
+        sudo apt-get install -y curl wget
+        # بررسی فضای دیسک
+        df -h
+        # بررسی نسخه ffmpeg
+        ffmpeg -version
         
     - name: Install PHP dependencies
       run: |
-        composer validate  # اعتبارسنجی composer.json
+        composer validate
         composer install --no-dev --optimize-autoloader --no-progress
         
     - name: Run PHP Bot
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        MAX_RUNTIME: 360  # 6 ساعت به دقیقه
+        MAX_RUNTIME: 360
       run: |
+        # ایجاد دایرکتوری موقت با مجوز مناسب
+        sudo mkdir -p /tmp/telegram_bot
+        sudo chmod 777 /tmp/telegram_bot
+        
+        # نمایش اطلاعات سیستم
+        echo "=== System Information ==="
+        php -v
+        echo "PHP Memory: $(php -r 'echo ini_get("memory_limit");')"
+        echo "Disk space:"
+        df -h /tmp
+        echo "=== Starting Bot ==="
+        
+        # اجرای ربات
         php bot.php
