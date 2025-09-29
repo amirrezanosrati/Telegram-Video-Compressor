@@ -1,0 +1,13 @@
+{
+    "name": "telegram-video-bot",
+    "type": "project",
+    "require": {
+        "php": ">=8.0",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*"
+    },
+    "autoload": {
+        "files": ["config.php", "functions.php"]
+    }
+}
